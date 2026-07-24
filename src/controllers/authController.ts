@@ -1,0 +1,846 @@
+import { Request, Response } from 'express';
+import prisma, { withRetry } from '../utils/prisma';
+import { generateToken, hashPassword, comparePassword } from '../utils/auth';
+import { emailQueue } from '../queues/email.queue';
+import { validateBusinessEmailFormat } from '../utils/email-validator';
+
+function parseUserAgent(userAgent: string) {
+  let browser = 'Unknown Browser';
+  let device = 'Unknown Device';
+
+  if (!userAgent) return { browser, device };
+
+  const ua = userAgent.toLowerCase();
+
+  // Detect browser
+  if (ua.includes('firefox')) {
+    browser = 'Firefox';
+  } else if (ua.includes('chrome') && !ua.includes('chromium')) {
+    browser = 'Chrome';
+  } else if (ua.includes('safari') && !ua.includes('chrome')) {
+    browser = 'Safari';
+  } else if (ua.includes('edge')) {
+    browser = 'Edge';
+  } else if (ua.includes('opera')) {
+    browser = 'Opera';
+  }
+
+  // Detect device/OS
+  if (ua.includes('iphone')) {
+    device = 'iPhone';
+  } else if (ua.includes('ipad')) {
+    device = 'iPad';
+  } else if (ua.includes('android')) {
+    device = 'Android';
+  } else if (ua.includes('windows')) {
+    device = 'Windows PC';
+  } else if (ua.includes('macintosh')) {
+    device = 'Mac';
+  } else if (ua.includes('linux')) {
+    device = 'Linux PC';
+  }
+
+  return { browser, device };
+}
+
+
+export const register = async (req: Request, res: Response) => {
+  try {
+    const { email, password, phone, pin, role, first_name, last_name, business_name, shop_name, company_name } = req.body;
+
+    // Determine role from URL if not provided
+    let targetuser_role = role;
+    if (!targetuser_role) {
+      if (req.baseUrl.includes('store')) targetuser_role = 'consumer';
+      else if (req.baseUrl.includes('retailer')) targetuser_role = 'retailer';
+      else if (req.baseUrl.includes('wholesaler')) targetuser_role = 'wholesaler';
+    }
+
+    if (targetuser_role === 'retailer' || targetuser_role === 'wholesaler') {
+      return res.status(403).json({
+        error: 'Self-registration is not allowed for business accounts. Please contact a BIG Ltd administrator for onboarding.'
+      });
+    }
+
+    if (phone) {
+      if (!/^\+2507\d{8}$/.test(phone)) {
+        return res.status(400).json({
+          error: 'Phone number must start with +250 and follow the format +2507XXXXXXXX'
+        });
+      }
+    }
+
+    if (targetuser_role === 'consumer' && email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({
+          error: 'Invalid email format'
+        });
+      }
+    }
+
+    // Check existing user
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: email || undefined },
+          { phone: phone || undefined }
+        ]
+      }
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: 'User already exists' });
+    }
+
+    const hashedPassword = password ? await hashPassword(password) : undefined;
+    const hashedPin = pin ? await hashPassword(pin) : undefined;
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        phone,
+        password: hashedPassword,
+        pin: hashedPin, // Store pin (hashed)
+        role: targetuser_role,
+        isFirstLogin: false, // Explicitly set to false for self-registered consumers
+        name: first_name ? `${first_name} ${last_name || ''}`.trim() : (business_name || company_name || shop_name),
+        updatedAt: new Date()
+      }
+    });
+
+    // Create Profile
+    if (targetuser_role === 'consumer') {
+      await prisma.consumerProfile.create({
+        data: {
+          userId: user.id
+        }
+      });
+    } else if (targetuser_role === 'retailer') {
+      await prisma.retailerProfile.create({
+        data: {
+          userId: user.id,
+          shopName: shop_name || business_name || 'My Shop',
+          address: req.body.address
+        }
+      });
+    } else if (targetuser_role === 'wholesaler') {
+      await prisma.wholesalerProfile.create({
+        data: {
+          userId: user.id,
+          companyName: company_name || 'My Company',
+          address: req.body.address
+        }
+      });
+    }
+
+    const token = generateToken({ id: user.id, role: user.role, require_password_reset: false });
+
+    // Trigger Customer Signup SMS (CUS-SMS-001)
+    if (targetuser_role === 'consumer' && user.phone) {
+      try {
+        const { emailQueue } = await import('../queues/email.queue');
+        await emailQueue.add('customer-signup', {
+          to: user.phone,
+          templateType: 'customer-signup', // Mapped to CUS-SMS-001
+          data: {
+            customer_name: user.name || 'Valued Customer',
+            customer_id: user.id.toString()
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      } catch (err) {
+        console.error('Customer signup notification failed:', err);
+      }
+    }
+
+    // Trigger Customer Signup Email (account creation / sign up)
+    if (targetuser_role === 'consumer' && user.email) {
+      try {
+        const { emailQueue } = await import('../queues/email.queue');
+        await emailQueue.add('customer-signup-email', {
+          to: user.email,
+          templateType: 'customer-signup-email', // Mapped to CUS-EMAIL-001
+          data: {
+            customer_name: user.name || 'Valued Customer',
+            email: user.email,
+            customer_id: user.id.toString()
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      } catch (err) {
+        console.error('Customer signup email failed:', err);
+      }
+    }
+
+    res.json({
+      success: true,
+      access_token: token,
+      user_id: user.id,
+      message: 'Registration successful'
+    });
+
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+export const login = async (req: Request, res: Response) => {
+  try {
+    const { email, password, phone, pin } = req.body;
+    console.log('Login attempt:', { email, phone, role: req.body.role, baseUrl: req.baseUrl });
+
+    let targetuser_role = req.body.role;
+    if (!targetuser_role) {
+      if (req.baseUrl.includes('store')) targetuser_role = 'consumer';
+      else if (req.baseUrl.includes('retailer')) targetuser_role = 'retailer';
+      else if (req.baseUrl.includes('wholesaler')) targetuser_role = 'wholesaler';
+      else if (req.baseUrl.includes('employee')) targetuser_role = 'employee';
+      else if (req.baseUrl.includes('admin')) targetuser_role = 'admin';
+    }
+    console.log('Determined role:', targetuser_role);
+
+    // Find User with retry for connection issues
+    const user = await withRetry(() => prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: email || undefined },
+          { phone: phone || undefined }
+        ],
+        role: targetuser_role // Ensure role matches
+      },
+      include: {
+        consumerProfile: true,
+        retailerProfile: true,
+        wholesalerProfile: true,
+        employeeProfile: true
+      }
+    }));
+
+
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials or role' });
+    }
+
+    if (user.isActive === false) {
+      return res.status(403).json({ error: 'Account is deactivated. Please contact support.' });
+    }
+
+    // Verify Password or PIN
+    let valid = false;
+    if (user.isFirstLogin) {
+      // Must validate only the temporary password (which is stored in user.password)
+      const inputPass = (targetuser_role === 'consumer' && pin) ? pin : password;
+      if (inputPass && user.password && await comparePassword(inputPass, user.password)) {
+        valid = true;
+      }
+    } else {
+      if (targetuser_role === 'consumer') {
+        if (user.pin && pin && await comparePassword(pin, user.pin)) valid = true;
+        else if (user.password && password && await comparePassword(password, user.password)) valid = true;
+      } else {
+        if (user.password && await comparePassword(password, user.password)) valid = true;
+      }
+    }
+
+    if (!valid) {
+      if (user.role === 'consumer' && user.email) {
+        await emailQueue.add('customer-failed-login-email', {
+          to: user.email,
+          templateType: 'customer-failed-login-email', // Mapped to CUS-EMAIL-008
+          data: {
+            customer_name: user.name || 'Customer',
+            attempt_time: new Date().toLocaleString(),
+            device: req.headers['user-agent'] || 'Unknown Device',
+            ip: req.ip || 'Unknown'
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+
+      // Notify Retailer of Failed Login (RET-EMAIL-017)
+      if (user.role === 'retailer' && user.email) {
+        await emailQueue.add('failed-login-alert', {
+          to: user.email,
+          templateType: 'failed-login', // Mapped to RET-EMAIL-017
+          data: {
+            retail_name: user.name || 'Retailer',
+            attempt_time: new Date().toLocaleString(),
+            device: req.headers['user-agent'] || 'Unknown Device',
+            ip: req.ip || 'Unknown'
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+
+      // Notify Wholesaler of Failed Login (WHO-EMAIL-016)
+      if (user.role === 'wholesaler' && user.email) {
+        await emailQueue.add('failed-login-alert', {
+          to: user.email,
+          templateType: 'wholesaler-failed-login', // Mapped to WHO-EMAIL-016
+          data: {
+            wholesaler_name: user.name || 'Wholesaler',
+            attempt_time: new Date().toLocaleString(),
+            device: req.headers['user-agent'] || 'Unknown Device',
+            ip: req.ip || 'Unknown'
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+
+      // Notify Consumer of Failed Login (CUS-SMS-011)
+      if (user.role === 'consumer' && user.phone) {
+        await emailQueue.add('failed-login-alert', {
+          to: user.phone,
+          templateType: 'customer-failed-login', // Mapped to CUS-SMS-011
+          data: {
+            customer_name: user.name || 'Customer',
+            attempt_time: new Date().toLocaleString()
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = generateToken({ id: user.id, role: user.role, require_password_reset: user.isFirstLogin });
+
+    // Notify Retailer of Suspicious Activity (RET-EMAIL-015)
+    if (user.role === 'retailer' && user.email) {
+      const userAgent = req.headers['user-agent'] || 'Unknown Device';
+      const ipAddress = req.ip || (req.headers['x-forwarded-for'] as string) || 'Unknown';
+      const { browser, device } = parseUserAgent(userAgent);
+
+      // Get previous logins
+      const previousLogins = await (prisma as any).wholesalerLogin.findMany({
+        where: { userId: user.id },
+        orderBy: { createdAt: 'desc' },
+        take: 50
+      });
+
+      let isUnusual = false;
+      let unusualReason = 'Unusual account login detected';
+
+      if (previousLogins.length > 0) {
+        const knownDevices = new Set(previousLogins.map(l => l.device));
+        const knownBrowsers = new Set(previousLogins.map(l => l.browser));
+
+        const isNewDevice = !knownDevices.has(device);
+        const isNewBrowser = !knownBrowsers.has(browser);
+
+        const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+        const recentLoginsCount = previousLogins.filter(l => new Date(l.createdAt) > tenMinutesAgo).length;
+        const isHighFrequency = recentLoginsCount >= 5;
+
+        if (isNewDevice || isNewBrowser || isHighFrequency) {
+          isUnusual = true;
+          const reasons = [];
+          if (isNewDevice) reasons.push('new device');
+          if (isNewBrowser) reasons.push('new browser');
+          if (isHighFrequency) reasons.push('suspicious login frequency');
+          unusualReason = `Unusual login detected: ${reasons.join(', ')}`;
+        }
+      }
+
+      // Record this login
+      await (prisma as any).wholesalerLogin.create({
+        data: {
+          userId: user.id,
+          ipAddress,
+          userAgent,
+          device,
+          browser
+        }
+      });
+
+      if (isUnusual) {
+        await emailQueue.add('suspicious-activity-alert', {
+          to: user.email,
+          templateType: 'suspicious-activity', // Mapped to RET-EMAIL-015
+          data: {
+            retail_name: user.name || 'Retailer',
+            activity: unusualReason,
+            time: new Date().toLocaleString(),
+            location: 'Kigali, Rwanda (Approx)',
+            device: req.headers['user-agent'] || 'Unknown Device',
+            security_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/retailer/security`
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+    }
+
+    // Notify Wholesaler of Suspicious Activity (WHO-EMAIL-015)
+    if (user.role === 'wholesaler' && user.email) {
+      const userAgent = req.headers['user-agent'] || 'Unknown Device';
+      const ipAddress = req.ip || (req.headers['x-forwarded-for'] as string) || 'Unknown';
+      const { browser, device } = parseUserAgent(userAgent);
+
+      // Get previous logins
+      const previousLogins = await (prisma as any).wholesalerLogin.findMany({
+        where: { userId: user.id },
+        orderBy: { createdAt: 'desc' },
+        take: 50
+      });
+
+      let isUnusual = false;
+      let unusualReason = 'Unusual account login detected';
+
+      if (previousLogins.length > 0) {
+        const knownDevices = new Set(previousLogins.map(l => l.device));
+        const knownBrowsers = new Set(previousLogins.map(l => l.browser));
+
+        const isNewDevice = !knownDevices.has(device);
+        const isNewBrowser = !knownBrowsers.has(browser);
+
+        const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+        const recentLoginsCount = previousLogins.filter(l => new Date(l.createdAt) > tenMinutesAgo).length;
+        const isHighFrequency = recentLoginsCount >= 5;
+
+        if (isNewDevice || isNewBrowser || isHighFrequency) {
+          isUnusual = true;
+          const reasons = [];
+          if (isNewDevice) reasons.push('new device');
+          if (isNewBrowser) reasons.push('new browser');
+          if (isHighFrequency) reasons.push('suspicious login frequency');
+          unusualReason = `Unusual login detected: ${reasons.join(', ')}`;
+        }
+      }
+
+      // Record this login
+      await (prisma as any).wholesalerLogin.create({
+        data: {
+          userId: user.id,
+          ipAddress,
+          userAgent,
+          device,
+          browser
+        }
+      });
+
+      if (isUnusual) {
+        await emailQueue.add('suspicious-activity-alert', {
+          to: user.email,
+          templateType: 'wholesaler-suspicious-activity', // Mapped to WHO-EMAIL-015
+          data: {
+            wholesaler_name: user.name || 'Wholesaler',
+            activity: unusualReason,
+            time: new Date().toLocaleString(),
+            location: ipAddress,
+            security_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/wholesaler/security`
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+    }
+
+    // Format Response
+    const responseData: any = {
+      success: true,
+      access_token: token,
+      require_password_reset: user.isFirstLogin
+    };
+
+    if (targetuser_role === 'consumer') {
+      responseData.customer = {
+        id: user.id,
+        email: user.email,
+        phone: user.phone,
+        first_name: user.name?.split(' ')[0],
+        last_name: user.name?.split(' ').slice(1).join(' '),
+        ...user.consumerProfile
+      };
+    } else if (targetuser_role === 'retailer') {
+      responseData.retailer = {
+        id: user.id,
+        email: user.email,
+        phone: user.phone,
+        shop_name: user.retailerProfile?.shopName,
+        name: user.name,
+        ...user.retailerProfile
+      };
+    } else if (targetuser_role === 'wholesaler') {
+      responseData.wholesaler = {
+        id: user.id,
+        email: user.email,
+        phone: user.phone,
+        company_name: user.wholesalerProfile?.companyName,
+        name: user.name,
+        ...user.wholesalerProfile
+      };
+    } else if (targetuser_role === 'employee') {
+      responseData.employee = {
+        id: user.id,
+        email: user.email,
+        phone: user.phone,
+        name: user.name,
+        ...user.employeeProfile
+      };
+    } else if (targetuser_role === 'admin') {
+      responseData.admin = {
+        id: user.id,
+        email: user.email,
+        name: user.name
+      };
+    }
+
+    res.json(responseData);
+
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+export const updatePassword = async (req: any, res: Response) => {
+  try {
+    const { old_password, new_password } = req.body;
+    const userId = req.user.id;
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.password) {
+      const isValid = await comparePassword(old_password, user.password);
+      if (!isValid) {
+        return res.status(400).json({ error: 'Incorrect current password' });
+      }
+    }
+
+    const hashedPassword = await hashPassword(new_password);
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        password: hashedPassword,
+        isFirstLogin: false,
+        tempPassword: null
+      }
+    });
+
+    // Notify Retailer of Security Update (RET-EMAIL-012)
+    if (user.role === 'retailer' && user.email) {
+      await emailQueue.add('security-update-alert', {
+        to: user.email,
+        templateType: 'security-update', // Mapped to RET-EMAIL-012
+        data: {
+          retail_name: user.name || 'Retailer',
+          change_time: new Date().toLocaleString(),
+          device: req.headers['user-agent'] || 'Unknown Device',
+          ip_address: req.ip || 'Unknown'
+        },
+        relatedEntity: { type: 'USER', id: user.id.toString() }
+      });
+    }
+
+    // Notify Wholesaler of Security Update (WHO-EMAIL-012)
+    if (user.role === 'wholesaler' && user.email) {
+      await emailQueue.add('security-update-alert', {
+        to: user.email,
+        templateType: 'wholesaler-security-update', // Mapped to WHO-EMAIL-012
+        data: {
+          wholesaler_name: user.name || 'Wholesaler',
+          change_time: new Date().toLocaleString(),
+          device: req.headers['user-agent'] || 'Unknown Device',
+          ip_address: req.ip || 'Unknown'
+        },
+        relatedEntity: { type: 'USER', id: user.id.toString() }
+      });
+    }
+
+    // Notify Consumer of Security Update (CUS-SMS-007 / CUS-EMAIL-007)
+    if (user.role === 'consumer') {
+      if (user.phone) {
+        await emailQueue.add('customer-security-update', {
+          to: user.phone,
+          templateType: 'customer-security-update', // Mapped to CUS-SMS-007
+          data: {
+            customer_name: user.name || 'Valued Customer',
+            change_time: new Date().toLocaleString()
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+      if (user.email) {
+        await emailQueue.add('customer-security-update-email', {
+          to: user.email,
+          templateType: 'customer-security-update-email', // Mapped to CUS-EMAIL-007
+          data: {
+            customer_name: user.name || 'Valued Customer',
+            change_time: new Date().toLocaleString()
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+    }
+
+    const newToken = generateToken({ id: user.id, role: user.role, require_password_reset: false });
+
+    res.json({ success: true, message: 'Password updated successfully', access_token: newToken });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+export const updatePin = async (req: any, res: Response) => {
+  try {
+    const { old_pin, new_pin } = req.body;
+    const userId = req.user.id;
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user || !user.pin) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const isValid = await comparePassword(old_pin, user.pin);
+    if (!isValid) {
+      return res.status(400).json({ error: 'Incorrect current PIN' });
+    }
+
+    const hashedPin = await hashPassword(new_pin);
+    await prisma.user.update({
+      where: { id: userId },
+      data: { pin: hashedPin }
+    });
+
+    // Notify Retailer of Security Update (RET-EMAIL-012)
+    if (user.role === 'retailer' && user.email) {
+      await emailQueue.add('security-update-alert', {
+        to: user.email,
+        templateType: 'security-update', // Mapped to RET-EMAIL-012
+        data: {
+          retail_name: user.name || 'Retailer',
+          change_time: new Date().toLocaleString(),
+          device: req.headers['user-agent'] || 'Unknown Device',
+          ip_address: req.ip || 'Unknown'
+        },
+        relatedEntity: { type: 'USER', id: user.id.toString() }
+      });
+    }
+
+    // Notify Wholesaler of Security Update (WHO-EMAIL-012)
+    if (user.role === 'wholesaler' && user.email) {
+      await emailQueue.add('security-update-alert', {
+        to: user.email,
+        templateType: 'wholesaler-security-update', // Mapped to WHO-EMAIL-012
+        data: {
+          wholesaler_name: user.name || 'Wholesaler',
+          change_time: new Date().toLocaleString(),
+          device: req.headers['user-agent'] || 'Unknown Device',
+          ip_address: req.ip || 'Unknown'
+        },
+        relatedEntity: { type: 'USER', id: user.id.toString() }
+      });
+    }
+
+    // Notify Consumer of Security Update (CUS-SMS-007 / CUS-EMAIL-007)
+    if (user.role === 'consumer') {
+      if (user.phone) {
+        await emailQueue.add('customer-security-update', {
+          to: user.phone,
+          templateType: 'customer-security-update', // Mapped to CUS-SMS-007
+          data: {
+            customer_name: user.name || 'Valued Customer',
+            change_time: new Date().toLocaleString()
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+      if (user.email) {
+        await emailQueue.add('customer-security-update-email', {
+          to: user.email,
+          templateType: 'customer-security-update-email', // Mapped to CUS-EMAIL-007
+          data: {
+            customer_name: user.name || 'Valued Customer',
+            change_time: new Date().toLocaleString()
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+    }
+
+    const newToken = generateToken({ id: user.id, role: user.role, require_password_reset: false });
+
+    res.json({ success: true, message: 'PIN updated successfully', access_token: newToken });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+export const forgotPassword = async (req: Request, res: Response) => {
+  try {
+    const { email, method } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email or phone number is required' });
+    }
+
+    let targetuser_role = req.body.role;
+    if (!targetuser_role) {
+      if (req.baseUrl.includes('store')) targetuser_role = 'consumer';
+      else if (req.baseUrl.includes('retailer')) targetuser_role = 'retailer';
+      else if (req.baseUrl.includes('wholesaler')) targetuser_role = 'wholesaler';
+      else if (req.baseUrl.includes('employee')) targetuser_role = 'employee';
+      else if (req.baseUrl.includes('admin')) targetuser_role = 'admin';
+    }
+
+    // Determine normalized phone search value if it looks like a phone number or method is 'phone'
+    let searchPhone = email.trim();
+    if (searchPhone.startsWith('07')) searchPhone = '+250' + searchPhone.substring(1);
+    else if (searchPhone.startsWith('7')) searchPhone = '+250' + searchPhone;
+    else if (searchPhone.startsWith('250')) searchPhone = '+' + searchPhone;
+    else if (searchPhone.match(/^\d{9,10}$/) && !searchPhone.startsWith('+')) searchPhone = '+250' + searchPhone;
+
+    // Find user matching role and email/phone
+    let user;
+    if (method === 'phone') {
+      user = await prisma.user.findFirst({
+        where: {
+          phone: searchPhone,
+          role: targetuser_role
+        }
+      });
+      if (!user) {
+        return res.status(404).json({ error: 'User with this phone number and role not found' });
+      }
+    } else if (method === 'email') {
+      user = await prisma.user.findFirst({
+        where: {
+          email: email.trim(),
+          role: targetuser_role
+        }
+      });
+      if (!user) {
+        return res.status(404).json({ error: 'User with this email address and role not found' });
+      }
+    } else {
+      // Fallback: search both
+      user = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { email: email.trim() },
+            { phone: searchPhone }
+          ],
+          role: targetuser_role
+        }
+      });
+      if (!user) {
+        return res.status(404).json({ error: 'User not found with matching email/phone and role' });
+      }
+    }
+
+    // Determine target delivery channel based on user configuration and selected method
+    let deliveryChannel: 'email' | 'sms' = 'email';
+    if (method === 'phone' || (!user.email && user.phone)) {
+      deliveryChannel = 'sms';
+    }
+
+    // Validation checks for chosen delivery channel availability
+    if (deliveryChannel === 'email' && !user.email) {
+      return res.status(400).json({ error: 'Your account does not have a registered email address. Please use the phone option.' });
+    }
+    if (deliveryChannel === 'sms' && !user.phone) {
+      return res.status(400).json({ error: 'Your account does not have a registered phone number. Please use the email option.' });
+    }
+
+    // Generate random 8-character password
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let tempPass = 'BIG-';
+    for (let i = 0; i < 8; i++) {
+      tempPass += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+
+    const hashedPassword = await hashPassword(tempPass);
+
+    // Update user password and set isFirstLogin = true
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        isFirstLogin: true,
+        tempPassword: tempPass
+      }
+    });
+
+    // Send password reset notification
+    const subject = '🔐 Temporary Password Reset - Big Innovation Group';
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <h2 style="color: #0f766e;">Big Innovation Group Ltd</h2>
+          <p style="color: #64748b;">Password Recovery Service</p>
+        </div>
+        <p>Hello <strong>${user.name || 'User'}</strong>,</p>
+        <p>We received a request to reset your password. A temporary password has been generated for your account:</p>
+        <div style="background-color: #f1f5f9; padding: 15px; text-align: center; border-radius: 8px; margin: 20px 0;">
+          <code style="font-size: 20px; font-weight: bold; color: #0f766e; letter-spacing: 1px;">${tempPass}</code>
+        </div>
+        <p style="color: #dc2626; font-size: 14px;"><strong>Important:</strong> You will be required to change this password immediately upon logging in.</p>
+        <p>If you did not request this, please contact support immediately.</p>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+        <p style="font-size: 12px; color: #94a3b8; text-align: center;">© ${new Date().getFullYear()} Big Innovation Group Ltd. All rights reserved.</p>
+      </div>
+    `;
+
+    try {
+      if (deliveryChannel === 'email') {
+        await emailQueue.add('password-reset', {
+          to: user.email,
+          templateType: 'password-reset', // Mapped to SYS-EMAIL-002
+          data: {
+            customer_name: user.name || 'Customer',
+            temp_password: tempPass
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      } else {
+        await emailQueue.add('password-reset-SMS', {
+          to: user.phone,
+          templateType: 'password-reset-SMS', // Mapped to SYS-SMS-002
+          data: {
+            customer_name: user.name || 'Customer',
+            temp_password: tempPass
+          },
+          relatedEntity: { type: 'USER', id: user.id.toString() }
+        });
+      }
+    } catch (queueError) {
+      console.error('[forgotPassword] Failed to queue password reset notification. Attempting fallback direct delivery.', queueError);
+      try {
+        if (deliveryChannel === 'email') {
+          const { EmailService } = await import('../services/email.service');
+          await EmailService.sendEmail(
+            user.email!,
+            subject,
+            htmlContent,
+            'password-reset',
+            { type: 'USER', id: user.id.toString() }
+          );
+        } else {
+          const { SMSService } = await import('../services/sms.service');
+          await SMSService.sendSMS(
+            user.phone!,
+            `Welcome ${user.name || 'Customer'}, your temporary password is ${tempPass}. Please log in and change it. for support call: +250788541239`,
+            'password-reset-SMS',
+            { type: 'USER', id: user.id.toString() }
+          );
+        }
+      } catch (fallbackError: any) {
+        console.error('[forgotPassword] Fallback direct delivery also failed:', fallbackError.message);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: deliveryChannel === 'email'
+        ? 'Temporary password sent to email'
+        : 'Temporary password sent via SMS',
+      ...(process.env.NODE_ENV === 'development' && { dev_temp_pass: tempPass })
+    });
+  } catch (error: any) {
+    console.error('[forgotPassword] Error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+};
