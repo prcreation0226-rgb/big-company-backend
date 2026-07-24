@@ -48,6 +48,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getOrderDetails = exports.getCustomerOrders = exports.getGasRewardsLeaderboard = exports.getGasRewardsHistory = exports.getGasRewardsBalance = exports.recordGasUsage = exports.getGasUsage = exports.topupGas = exports.removeGasMeter = exports.addGasMeter = exports.getGasMeters = exports.lookupMeter = exports.getGasConfig = void 0;
 const prisma_1 = __importDefault(require("../utils/prisma"));
 const pipingMeter_service_1 = __importDefault(require("../services/pipingMeter.service"));
+const tokenMeter_service_1 = __importDefault(require("../services/tokenMeter.service"));
 // Get gas configuration (price, etc)
 const getGasConfig = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
@@ -187,9 +188,12 @@ const addGasMeter = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         if (!consumerProfile) {
             return res.status(404).json({ success: false, error: 'Customer profile not found' });
         }
-        // Check if meter already exists
-        const existingMeter = yield prisma_1.default.gasMeter.findUnique({
-            where: { meterNumber: meter_number }
+        // Check if meter already exists for this consumer
+        const existingMeter = yield prisma_1.default.gasMeter.findFirst({
+            where: {
+                meterNumber: meter_number,
+                consumerId: consumerProfile.id
+            }
         });
         if (existingMeter) {
             return res.status(400).json({ success: false, error: 'Meter number already registered' });
@@ -245,10 +249,13 @@ const removeGasMeter = (req, res) => __awaiter(void 0, void 0, void 0, function*
         if (!meter || meter.consumerId !== consumerProfile.id) {
             return res.status(404).json({ success: false, error: 'Gas meter not found' });
         }
-        // Soft delete
-        yield prisma_1.default.gasMeter.update({
-            where: { id: Number(id) },
-            data: { status: 'removed' }
+        // Hard delete
+        // We delete related topups first to avoid foreign key constraints
+        yield prisma_1.default.gasTopup.deleteMany({
+            where: { meterId: Number(id) }
+        });
+        yield prisma_1.default.gasMeter.delete({
+            where: { id: Number(id) }
         });
         res.json({
             success: true,
@@ -300,7 +307,7 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                     amount,
                     units,
                     currency: 'RWF',
-                    status: 'completed'
+                    status: 'Pending'
                 }
             });
             // Create customer order
@@ -425,13 +432,96 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             });
             return;
         }
-        // Generate gas meter token (16 digits formatted as XXXX-XXXX-XXXX-XXXX)
-        const generateToken = () => {
-            var _a;
-            const digits = Math.random().toString().slice(2, 18).padEnd(16, '0');
-            return ((_a = digits.match(/.{1,4}/g)) === null || _a === void 0 ? void 0 : _a.join('-')) || '0000-0000-0000-0000';
-        };
-        const token = generateToken();
+        // Call STS or GPRS APIs depending on meter type to deliver gas volume/token
+        let token = '';
+        const isGprsMeter = meter.meterType === 'PIPING' || meter.isGprs;
+        try {
+            if (isGprsMeter) {
+                // Sent to Meter: GPRS token transmission started
+                yield prisma_1.default.gasTopup.update({
+                    where: { id: topup.id },
+                    data: { status: 'Sent to Meter' }
+                });
+                // 1. GPRS/Piping Meter: Send remotelyTopUp command via LoRaWAN API
+                const LorawanService = require('../services/gasLorawanService');
+                const loraResult = yield LorawanService.rechargeMeter(meter.meterNumber, amount);
+                if (!loraResult.success) {
+                    yield prisma_1.default.gasTopup.update({
+                        where: { id: topup.id },
+                        data: { status: 'Failed' }
+                    });
+                    return res.status(500).json({ success: false, error: `GPRS Meter Recharge failed: ${loraResult.error}` });
+                }
+                token = `GPRS-${loraResult.orderId}`;
+                // Poll for acknowledgment (Status check)
+                let acknowledged = false;
+                for (let i = 0; i < 3; i++) {
+                    try {
+                        yield new Promise(resolve => setTimeout(resolve, 3000));
+                        const statusResult = yield LorawanService.getRechargeStatus(loraResult.orderId);
+                        if (statusResult.success) {
+                            if (statusResult.status === 2) {
+                                acknowledged = true;
+                                break;
+                            }
+                            else if (statusResult.status === 3) {
+                                break; // Delivery failed
+                            }
+                        }
+                    }
+                    catch (e) {
+                        console.error('Polling acknowledgment error:', e);
+                    }
+                }
+                if (acknowledged) {
+                    yield prisma_1.default.gasTopup.update({
+                        where: { id: topup.id },
+                        data: { status: 'Recharge successful', orderId: token }
+                    });
+                }
+                else {
+                    // Keep status as 'Sent to Meter' so the background scheduler can check and retry later
+                    yield prisma_1.default.gasTopup.update({
+                        where: { id: topup.id },
+                        data: { orderId: token }
+                    });
+                }
+            }
+            else {
+                // Token Generated: Token successfully created from STS湖南斯壮 API
+                const tokenResult = yield tokenMeter_service_1.default.rechargeTokenMeter({
+                    meterNumber: meter.meterNumber,
+                    amount: amount,
+                    customerRef: order.id.toString()
+                });
+                if (!tokenResult.success) {
+                    yield prisma_1.default.gasTopup.update({
+                        where: { id: topup.id },
+                        data: { status: 'Failed' }
+                    });
+                    return res.status(500).json({ success: false, error: `STS Token Vending failed: ${tokenResult.error}` });
+                }
+                token = tokenResult.token;
+                // Sent to Meter: STS token transmission started
+                yield prisma_1.default.gasTopup.update({
+                    where: { id: topup.id },
+                    data: { status: 'Sent to Meter', orderId: token }
+                });
+                // Recharge successful: STS Meter successfully received/token generated successfully
+                yield prisma_1.default.gasTopup.update({
+                    where: { id: topup.id },
+                    data: { status: 'Recharge successful' }
+                });
+            }
+        }
+        catch (apiErr) {
+            console.error('[Meter Recharge API Error]', apiErr);
+            yield prisma_1.default.gasTopup.update({
+                where: { id: topup.id },
+                data: { status: 'Failed' }
+            });
+            return res.status(500).json({ success: false, error: `Meter API communication failed: ${apiErr.message}` });
+        }
         res.json({
             success: true,
             data: {
@@ -458,7 +548,8 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                     meter_id: meter_number,
                     amount: amount.toLocaleString(),
                     token: token,
-                    transaction_id: order.id.toString()
+                    transaction_id: order.id.toString(),
+                    volume: units
                 },
                 relatedEntity: { type: 'GAS_ORDER', id: order.id.toString() }
             });
@@ -473,7 +564,8 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                         meter_id: meter_number,
                         amount: amount.toLocaleString(),
                         token: token,
-                        transaction_id: order.id.toString()
+                        transaction_id: order.id.toString(),
+                        volume: units
                     },
                     relatedEntity: { type: 'GAS_ORDER', id: order.id.toString() }
                 });

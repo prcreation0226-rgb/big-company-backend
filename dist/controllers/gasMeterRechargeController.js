@@ -468,7 +468,8 @@ const initiateGasMeterRecharge = (req, res) => __awaiter(void 0, void 0, void 0,
                         meter_id: meterNumber,
                         amount: totalMoneyAmount.toLocaleString(),
                         token: apiResult.token || 'N/A',
-                        transaction_id: String(txRecord.id)
+                        transaction_id: String(txRecord.id),
+                        volume: apiResult.units || totalVolume
                     },
                     relatedEntity: { type: 'GAS_RECHARGE', id: String(txRecord.id) }
                 });
@@ -488,7 +489,8 @@ const initiateGasMeterRecharge = (req, res) => __awaiter(void 0, void 0, void 0,
                                 meter_id: meterNumber,
                                 amount: totalMoneyAmount.toLocaleString(),
                                 token: apiResult.token || 'N/A',
-                                transaction_id: String(txRecord.id)
+                                transaction_id: String(txRecord.id),
+                                volume: apiResult.units || totalVolume
                             },
                             relatedEntity: { type: 'GAS_RECHARGE', id: String(txRecord.id) }
                         });

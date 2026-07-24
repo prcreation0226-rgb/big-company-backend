@@ -902,6 +902,7 @@ const CUSTOMER_EMAIL_TEMPLATES = [
       <p><strong>Receipt Details:</strong></p>
       <ul>
         <li>Recharge Amount: {{amount}} RWF</li>
+        <li>Gas Volume: <strong>{{volume}} m³</strong></li>
         <li>Token Code: <strong>{{token}}</strong></li>
         <li>Reference ID: {{transaction_id}}</li>
       </ul>
@@ -1064,7 +1065,7 @@ const CUSTOMER_SMS_TEMPLATES = [
         name: 'CUS-SMS-004',
         subject: 'Gas Recharge Token Confirmation',
         description: 'Triggered when customer buys gas meter recharge/token',
-        content: 'Hello {{customer_name}}, gas recharge for {{meter_name}} {{meter_id}} is successful. Amount: {{amount}} RWF. Token: {{token}}. Ref: {{transaction_id}}. for support call: +250788541239.'
+        content: 'Hello {{customer_name}}, gas recharge for {{meter_name}} {{meter_id}} is successful. Amount: {{amount}} RWF. Gas: {{volume}}m³ Token: {{token}}. Ref: {{transaction_id}}. for support call: +250788541239.'
     },
     {
         name: 'CUS-SMS-005',

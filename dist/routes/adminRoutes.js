@@ -147,6 +147,8 @@ router.post('/email-logs/:id/resend', adminController_1.resendEmail);
 // Email Template Routes
 router.get('/email-templates', adminController_1.getEmailTemplates);
 router.post('/email-templates', adminController_1.saveEmailTemplate);
+router.post('/email-templates/preview', adminController_1.previewEmailTemplate);
+router.get('/email-templates/variables', adminController_1.getTemplateVariables);
 router.delete('/email-templates/:id', adminController_1.deleteEmailTemplate);
 // Manual Email Sending
 router.post('/send-manual-email', adminController_1.sendManualEmail);

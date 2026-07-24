@@ -295,7 +295,9 @@ const getInventory = (req, res) => __awaiter(void 0, void 0, void 0, function* (
         });
         const config = yield prisma_1.default.systemConfig.findFirst();
         const retailerMarkupPct = (config === null || config === void 0 ? void 0 : config.retailerMarkup) || 20;
-        const productsWithMargin = myProducts.map(p => (Object.assign(Object.assign({}, p), { profitMargin: retailerMarkupPct })));
+        const productsWithMargin = myProducts.map(p => {
+            return Object.assign(Object.assign({}, p), { profitMargin: retailerMarkupPct });
+        });
         res.json({ products: productsWithMargin });
     }
     catch (error) {

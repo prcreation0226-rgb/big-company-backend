@@ -20,7 +20,12 @@ function main() {
         for (const item of gprsMapping_1.gprsMapping) {
             try {
                 const result = yield prisma.gasMeter.upsert({
-                    where: { meterNumber: item.meterNo },
+                    where: {
+                        consumerId_meterNumber: {
+                            consumerId: defaultConsumerId,
+                            meterNumber: item.meterNo
+                        }
+                    },
                     update: {
                         imei: item.imei,
                         serialNo: item.serialNo,

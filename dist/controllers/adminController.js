@@ -46,7 +46,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.adminConfirmWholesalerOrder = exports.getWholesalerAccountDetails = exports.getWorkerAccountDetails = exports.getRetailerAccountDetails = exports.getCustomerAccountDetails = exports.updateSystemConfig = exports.getSystemConfig = exports.getRevenueReport = exports.getTransactionReport = exports.unlinkNFCCard = exports.activateNFCCard = exports.blockNFCCard = exports.getNFCCardTransactions = exports.registerNFCCard = exports.rejectLoan = exports.approveLoan = exports.deleteEmployee = exports.updateEmployee = exports.createEmployee = exports.getEmployees = exports.deleteProduct = exports.updateProduct = exports.createProduct = exports.getProducts = exports.deleteCustomer = exports.updateCustomerStatus = exports.updateCustomer = exports.updateWholesalerStatus = exports.updateRetailerStatus = exports.deleteWholesaler = exports.updateWholesaler = exports.verifyWholesaler = exports.verifyRetailer = exports.deleteRetailer = exports.updateRetailer = exports.deleteCategory = exports.updateCategory = exports.createCategory = exports.getCategories = exports.getNFCCards = exports.getLoans = exports.createWholesaler = exports.getWholesalers = exports.createRetailer = exports.getRetailers = exports.createCustomer = exports.getCustomer = exports.getCustomers = exports.getReports = exports.getDashboard = void 0;
-exports.endGasPeriod = exports.getProfitInvoiceStats = exports.getProfitInvoiceRecipients = exports.generateAdminProfitInvoice = exports.getAdminProfitInvoices = exports.processRefundRequest = exports.getRefundRequests = exports.getCustomerCreditLimit = exports.updateCustomerCreditLimit = exports.acknowledgeAlert = exports.getSystemAlerts = exports.updateEmailEvent = exports.getEmailEvents = exports.sendManualEmail = exports.deleteEmailTemplate = exports.saveEmailTemplate = exports.getEmailTemplates = exports.resendEmail = exports.getEmailLogs = exports.confirmWholesaleDelivery = exports.deleteSettlementInvoice = exports.updateSettlementInvoice = exports.getSettlementInvoice = exports.createSettlementInvoice = exports.getSettlementInvoices = exports.unlinkRetailerFromWholesaler = exports.linkRetailerToWholesaler = exports.getRetailerWholesalerLinkage = exports.adminDeleteWholesalerProduct = exports.adminUpdateWholesalerStock = exports.adminUpdateWholesalerProduct = exports.adminShipWholesalerOrder = exports.adminRejectWholesalerOrder = void 0;
+exports.endGasPeriod = exports.getProfitInvoiceStats = exports.getProfitInvoiceRecipients = exports.generateAdminProfitInvoice = exports.getAdminProfitInvoices = exports.processRefundRequest = exports.getRefundRequests = exports.getCustomerCreditLimit = exports.updateCustomerCreditLimit = exports.acknowledgeAlert = exports.getSystemAlerts = exports.updateEmailEvent = exports.getEmailEvents = exports.sendManualEmail = exports.deleteEmailTemplate = exports.getTemplateVariables = exports.previewEmailTemplate = exports.saveEmailTemplate = exports.getEmailTemplates = exports.resendEmail = exports.getEmailLogs = exports.confirmWholesaleDelivery = exports.deleteSettlementInvoice = exports.updateSettlementInvoice = exports.getSettlementInvoice = exports.createSettlementInvoice = exports.getSettlementInvoices = exports.unlinkRetailerFromWholesaler = exports.linkRetailerToWholesaler = exports.getRetailerWholesalerLinkage = exports.adminDeleteWholesalerProduct = exports.adminUpdateWholesalerStock = exports.adminUpdateWholesalerProduct = exports.adminShipWholesalerOrder = exports.adminRejectWholesalerOrder = void 0;
 const prisma_1 = __importDefault(require("../utils/prisma"));
 const cloudinary_1 = require("../utils/cloudinary");
 const auth_1 = require("../utils/auth");
@@ -54,6 +54,7 @@ const crypto_1 = __importDefault(require("crypto"));
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const email_queue_1 = require("../queues/email.queue");
+const template_service_1 = require("../services/template.service");
 const email_validator_1 = require("../utils/email-validator");
 const pricingUtils_1 = require("../utils/pricingUtils");
 // Get detailed dashboard stats.
@@ -185,12 +186,11 @@ const getDashboard = (req, res) => __awaiter(void 0, void 0, void 0, function* (
             where: { type: 'dashboard_wallet' },
             _sum: { balance: true }
         });
-        const secondaryWalletsSum = yield prisma_1.default.wallet.aggregate({
-            where: { type: 'capital' },
-            _sum: { balance: true }
+        const retailerCapitalSum = yield prisma_1.default.retailerProfile.aggregate({
+            _sum: { walletBalance: true }
         });
         const totalWalletBalance = Math.round((consumerWalletSum._sum.balance || 0) +
-            (secondaryWalletsSum._sum.balance || 0));
+            (retailerCapitalSum._sum.walletBalance || 0));
         // 9. System-wide Rewards (Sum of all historically distributed gas rewards)
         const gasRewardsSum = yield prisma_1.default.gasReward.aggregate({ _sum: { units: true } });
         const totalRewardsPoints = Math.round(gasRewardsSum._sum.units || 0);
@@ -2696,7 +2696,7 @@ const getCustomerAccountDetails = (req, res) => __awaiter(void 0, void 0, void 0
             _sum: { amount: true, units: true }
         });
         const totalGasRewardsSum = yield prisma_1.default.gasReward.aggregate({
-            where: Object.assign({ consumerId: customer.id }, (lastGasResetDate ? { createdAt: { gte: lastGasResetDate } } : {})),
+            where: Object.assign({ consumerId: customer.id, units: { gt: 0 } }, (lastGasResetDate ? { createdAt: { gte: lastGasResetDate } } : {})),
             _sum: { units: true }
         });
         // Gas usage summary
@@ -2982,7 +2982,7 @@ const getRetailerAccountDetails = (req, res) => __awaiter(void 0, void 0, void 0
                     lowStock: retailer.inventory.filter(p => p.lowStockThreshold && p.stock <= p.lowStockThreshold).length,
                     outOfStock: retailer.inventory.filter(p => p.stock === 0).length
                 },
-                products: retailer.inventory,
+                products: retailer.inventory.map(p => (Object.assign(Object.assign({}, p), { profitMargin: retailerMarkup }))),
                 creditRequests: retailer.creditRequests,
                 lastOrder,
                 linkedWholesaler: retailer.linkedWholesaler ? {
@@ -3917,11 +3917,37 @@ const getEmailTemplates = (req, res) => __awaiter(void 0, void 0, void 0, functi
 });
 exports.getEmailTemplates = getEmailTemplates;
 /**
- * Create or Update an email template
+ * Create or Update an email template with validation
  */
 const saveEmailTemplate = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { name, subject, content, description, isActive, portal, triggerName, channel } = req.body;
+        const SUPPORTED_VARIABLES = [
+            'Customer_name', 'customer_name', 'name', 'retail_name', 'wholesaler_name',
+            'meter_name', 'meter_id', 'amount', 'volume', 'token', 'transaction_id',
+            'tempPass', 'role', 'email', 'productName', 'currentStock', 'threshold',
+            'type', 'balance', 'txRef', 'orderNumber', 'quantity', 'totalAmount',
+            'temp_password', 'attempt_time', 'date', 'month', 'salesCount', 'revenue',
+            'newRetailers', 'newWholesalers', 'lowStockCount', 'offlineMeters', 'period',
+            'action', 'reason'
+        ];
+        // Validate variables in both subject and content
+        const textToValidate = `${subject || ''} ${content || ''}`;
+        const variableRegex = /{{(.*?)}}/g;
+        const invalidVariables = [];
+        let match;
+        while ((match = variableRegex.exec(textToValidate)) !== null) {
+            const varName = match[1].trim();
+            if (!SUPPORTED_VARIABLES.includes(varName)) {
+                invalidVariables.push(varName);
+            }
+        }
+        if (invalidVariables.length > 0) {
+            return res.status(400).json({
+                success: false,
+                error: `Invalid or unsupported variable(s): ${invalidVariables.map(v => `{{${v}}}`).join(', ')}. Please use only valid system variables.`
+            });
+        }
         // @ts-ignore
         const template = yield prisma_1.default.emailTemplate.upsert({
             where: { name },
@@ -3945,6 +3971,102 @@ const saveEmailTemplate = (req, res) => __awaiter(void 0, void 0, void 0, functi
     }
 });
 exports.saveEmailTemplate = saveEmailTemplate;
+/**
+ * Preview email or SMS template with mockup data
+ */
+const previewEmailTemplate = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { subject, content, channel } = req.body;
+        const mockData = {
+            Customer_name: 'Kayitare',
+            customer_name: 'Kayitare',
+            name: 'Kayitare',
+            retail_name: 'Apex Retailer',
+            wholesaler_name: 'Apex Wholesaler',
+            meter_name: 'Tekana Gas Meter',
+            meter_id: '2510170000331',
+            amount: '650',
+            volume: '0.1',
+            token: '67444670080112715377',
+            transaction_id: '170',
+            tempPass: 'tempPass123',
+            role: 'retailer',
+            email: 'customer@gmail.com',
+            productName: 'Cooking Gas Regulator',
+            currentStock: '5',
+            threshold: '10',
+            type: 'LOW_BALANCE',
+            balance: '1200',
+            txRef: 'REF-8273648',
+            orderNumber: 'ORD-9923',
+            quantity: '3',
+            totalAmount: '9750',
+            temp_password: 'ResetTempPass123',
+            attempt_time: new Date().toLocaleString(),
+            date: new Date().toLocaleDateString(),
+            month: 'July',
+            salesCount: 42,
+            revenue: 136500,
+            newRetailers: 4,
+            newWholesalers: 1,
+            lowStockCount: 2,
+            offlineMeters: 0,
+            period: 'Today',
+            action: 'SUSPENDED',
+            reason: 'Policy Violation'
+        };
+        const render = (template, data) => {
+            let rendered = template;
+            Object.keys(data).forEach(key => {
+                const value = data[key];
+                const regex = new RegExp(`{{${key}}}`, 'g');
+                rendered = rendered.replace(regex, value !== undefined && value !== null ? String(value) : '');
+            });
+            return rendered;
+        };
+        const renderedSubject = render(subject || '', mockData);
+        let renderedContent = render(content || '', mockData);
+        const isSMS = channel === 'SMS';
+        if (!isSMS) {
+            renderedContent = template_service_1.TemplateService.wrap(renderedContent);
+        }
+        res.json({
+            success: true,
+            data: {
+                subject: renderedSubject,
+                content: renderedContent,
+                isSMS
+            }
+        });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+exports.previewEmailTemplate = previewEmailTemplate;
+/**
+ * Get all supported variables for email/SMS templates
+ */
+const getTemplateVariables = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        res.json({
+            success: true,
+            variables: [
+                'Customer_name', 'customer_name', 'name', 'retail_name', 'wholesaler_name',
+                'meter_name', 'meter_id', 'amount', 'volume', 'token', 'transaction_id',
+                'tempPass', 'role', 'email', 'productName', 'currentStock', 'threshold',
+                'type', 'balance', 'txRef', 'orderNumber', 'quantity', 'totalAmount',
+                'temp_password', 'attempt_time', 'date', 'month', 'salesCount', 'revenue',
+                'newRetailers', 'newWholesalers', 'lowStockCount', 'offlineMeters', 'period',
+                'action', 'reason'
+            ]
+        });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+exports.getTemplateVariables = getTemplateVariables;
 /**
  * Delete an email template
  */

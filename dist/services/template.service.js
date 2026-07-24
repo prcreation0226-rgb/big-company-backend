@@ -173,6 +173,7 @@ class TemplateService {
             <p><strong>Receipt Details:</strong></p>
             <ul>
               <li>Recharge Amount: <strong>${data.amount || '0'} RWF</strong></li>
+              <li>Gas Volume: <strong>${data.volume || '0'} m³</strong></li>
               <li>Token Code: <strong style="font-size: 16px; color: #6366f1;">${data.token || 'N/A'}</strong></li>
               <li>Reference ID: ${data.transaction_id || 'N/A'}</li>
             </ul>
