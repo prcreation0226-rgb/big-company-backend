@@ -66,8 +66,8 @@ class PalmKashService {
       console.log(`🚀 [PalmKash] Initiating payment for ${phone}, Amount: ${params.amount}`);
 
       // Official Endpoint
-      const url = "https://dashboard.palmkash.com/api/v1/payments/make-payment";
-      const callback_url = "https://big-company-production.up.railway.app/api/webhooks/palmkash";
+      const url = `${this.baseUrl}/payments/make-payment`;
+      const callback_url = "https://bigcompanybackend-production-458c.up.railway.app/api/webhooks/palmkash";
       const requestBody = {
         merchant_id: process.env.PALMKASH_CLIENT_ID,
         client_reference: params.referenceId,
