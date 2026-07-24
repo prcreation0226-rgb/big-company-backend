@@ -37,6 +37,8 @@ class PalmKashService {
     referenceId: string;
     description: string;
     callbackUrl?: string;
+    customerEmail?: string;
+    customerName?: string;
   }) {
 
     const isDev = process.env.DEV_MODE === 'true' || process.env.DEV_MODE === '1';
@@ -75,7 +77,9 @@ class PalmKashService {
         phone_number: phone,
         amount: params.amount,
         currency: "RWF",
-        callback_url: callback_url
+        callback_url: callback_url,
+        customer_email: params.customerEmail || "customer@big.co.rw",
+        customer_name: params.customerName || "Valued Customer"
       };
 
       const timestamp = Math.floor(Date.now() / 1000).toString();

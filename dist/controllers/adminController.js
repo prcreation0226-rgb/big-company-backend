@@ -3929,7 +3929,7 @@ const saveEmailTemplate = (req, res) => __awaiter(void 0, void 0, void 0, functi
             'type', 'balance', 'txRef', 'orderNumber', 'quantity', 'totalAmount',
             'temp_password', 'attempt_time', 'date', 'month', 'salesCount', 'revenue',
             'newRetailers', 'newWholesalers', 'lowStockCount', 'offlineMeters', 'period',
-            'action', 'reason'
+            'action', 'reason', 'reward_amount', 'new_reward_balance'
         ];
         // Validate variables in both subject and content
         const textToValidate = `${subject || ''} ${content || ''}`;
@@ -4058,7 +4058,7 @@ const getTemplateVariables = (req, res) => __awaiter(void 0, void 0, void 0, fun
                 'type', 'balance', 'txRef', 'orderNumber', 'quantity', 'totalAmount',
                 'temp_password', 'attempt_time', 'date', 'month', 'salesCount', 'revenue',
                 'newRetailers', 'newWholesalers', 'lowStockCount', 'offlineMeters', 'period',
-                'action', 'reason'
+                'action', 'reason', 'reward_amount', 'new_reward_balance'
             ]
         });
     }
