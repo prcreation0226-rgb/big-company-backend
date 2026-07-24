@@ -1,4 +1,5 @@
 import axios from 'axios';
+import crypto from 'crypto';
 import prisma from '../utils/prisma';
 import { monitoringService } from './monitoring.service';
 class PalmKashService {
@@ -69,7 +70,7 @@ class PalmKashService {
       const url = `${this.baseUrl}/payments/make-payment`;
       const callback_url = `${process.env.BACKEND_URL || 'https://big-company-backend-production.up.railway.app'}/api/webhooks/palmkash`;
       const requestBody = {
-        merchant_id: process.env.PALMKASH_CLIENT_ID,
+        merchant_id: this.clientId,
         client_reference: params.referenceId,
         phone_number: phone,
         amount: params.amount,
@@ -77,10 +78,24 @@ class PalmKashService {
         callback_url: callback_url
       };
 
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const bodyString = JSON.stringify(requestBody);
+      const signaturePayload = `${timestamp}.${bodyString}`;
+      const signature = crypto
+        .createHmac('sha256', this.secretKey)
+        .update(signaturePayload)
+        .digest('hex');
+
       const requestHeaders = {
-        'Authorization': `Bearer ${process.env.PALMKASH_SECRET_KEY}`,
         'Content-Type': 'application/json',
-        'Accept': 'application/json'
+        'Accept': 'application/json',
+        'X-Merchant-Key': this.clientId,
+        'X-Timestamp': timestamp,
+        'X-Signature': signature,
+        'X-Frame-Options': 'DENY',
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
+        'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload'
       };
 
       // DEBUG LOGS BEFORE REQUEST

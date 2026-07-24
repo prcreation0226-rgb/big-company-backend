@@ -4313,7 +4313,7 @@ export const saveEmailTemplate = async (req: AuthRequest, res: Response) => {
       'type', 'balance', 'txRef', 'orderNumber', 'quantity', 'totalAmount',
       'temp_password', 'attempt_time', 'date', 'month', 'salesCount', 'revenue',
       'newRetailers', 'newWholesalers', 'lowStockCount', 'offlineMeters', 'period',
-      'action', 'reason'
+      'action', 'reason', 'reward_amount', 'new_reward_balance'
     ];
 
     // Validate variables in both subject and content
@@ -4450,7 +4450,7 @@ export const getTemplateVariables = async (req: AuthRequest, res: Response) => {
         'type', 'balance', 'txRef', 'orderNumber', 'quantity', 'totalAmount',
         'temp_password', 'attempt_time', 'date', 'month', 'salesCount', 'revenue',
         'newRetailers', 'newWholesalers', 'lowStockCount', 'offlineMeters', 'period',
-        'action', 'reason'
+        'action', 'reason', 'reward_amount', 'new_reward_balance'
       ]
     });
   } catch (error: any) {
