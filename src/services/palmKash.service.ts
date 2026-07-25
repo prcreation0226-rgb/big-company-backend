@@ -322,10 +322,16 @@ class PalmKashService {
       const signature = crypto
         .createHmac(
           'sha256',
-          this.secretKey.trim()
+          Buffer.from(this.secretKey.trim(), 'utf8')
         )
-        .update(payload, 'utf8')
+        .update(Buffer.from(payload, 'utf8'))
         .digest('hex');
+
+      console.log("PalmKash Headers Debug", {
+        merchantKey: this.clientId,
+        timestamp,
+        signature
+      });
 
       console.log('[PalmKash] Sending payment request', {
         url,
