@@ -317,9 +317,14 @@ class PalmKashService {
       const bodyString = JSON.stringify(requestBody);
       const timestamp = Math.floor(Date.now() / 1000).toString();
 
+      const payload = `${timestamp}.${bodyString}`;
+
       const signature = crypto
-        .createHmac('sha256', this.secretKey)
-        .update(`${timestamp}.${bodyString}`, 'utf8')
+        .createHmac(
+          'sha256',
+          this.secretKey.trim()
+        )
+        .update(payload, 'utf8')
         .digest('hex');
 
       console.log('[PalmKash] Sending payment request', {
