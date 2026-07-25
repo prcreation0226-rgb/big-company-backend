@@ -36,8 +36,8 @@ export const initiateGasMeterRecharge = async (req: AuthRequest, res: Response) 
     // Always sanitize — trim whitespace, remove any MTR- prefix
     const meterNumber: string = String(req.body.meterNumber || '').trim().replace(/^MTR-/i, '');
 
-    const customerRef = `GASRCH-${meterType}-${Date.now()}`;
     const selectedProvider: string = (provider || 'stronpower').toLowerCase();
+    const customerRef = `GASRCH-${meterType}-${selectedProvider}-${Date.now()}`;
 
     const isPushToken = meterType === 'PIPING' && !!token;
 

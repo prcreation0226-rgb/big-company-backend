@@ -24,7 +24,8 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
     }
 
     // Official PalmKash status is usually 'SUCCESS' or 'FAILED' or 'PENDING'
-    const isSuccess = status === 'SUCCESS' || status === 'COMPLETED' || status === 'success';
+    const normalizedStatus = String(status || '').toLowerCase();
+    const isSuccess = normalizedStatus === 'success' || normalizedStatus === 'completed';
 
     if (!isSuccess) {
        console.log(`ℹ️ [Webhook] Transaction ${activeReference} is not successful (Status: ${status}). No action taken.`);
@@ -113,8 +114,125 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
         console.log(`ℹ️ [Webhook] Transaction ${activeReference} already processed or not found.`);
       }
     } 
+    else if (activeReference.startsWith('GASRCH-')) {
+        const txRecord = await prisma.gasRechargeTransaction.findFirst({
+            where: { apiReference: activeReference }
+        });
+
+        if (txRecord && txRecord.status === 'PENDING_PAYMENT') {
+            console.log(`✅ [Webhook] Completing gas meter recharge for reference: ${activeReference}`);
+            
+            const parts = activeReference.split('-');
+            const meterType = parts[1]; // TOKEN or PIPING
+            const provider = isNaN(Number(parts[2])) ? parts[2] : 'stronpower'; // zhongyi or stronpower
+
+            const config = await prisma.systemConfig.findFirst();
+            const gasPrice = config?.gasPricePerM3 || Number(process.env.GAS_PRICE_PER_M3) || 1500;
+            
+            const rawVolume = txRecord.isVendByUnit ? txRecord.amount : (txRecord.amount / gasPrice);
+            const totalVolume = Math.floor(rawVolume * 10) / 10;
+
+            let apiResult: any;
+
+            try {
+                if (provider === 'zhongyi') {
+                    const { default: zhongyiMeterService } = await import('../services/zhongyiMeter.service');
+                    console.log(`[Webhook GasRecharge] Routing ${meterType} recharge via Zhongyi API (Volume: ${totalVolume})`);
+                    apiResult = await zhongyiMeterService.rechargeMeter({
+                        meterNumber: txRecord.meterNumber,
+                        amount: totalVolume,
+                        customerRef: activeReference,
+                        isVendByUnit: true
+                    });
+                } else {
+                    const { default: tokenMeterService } = await import('../services/tokenMeter.service');
+                    console.log(`[Webhook GasRecharge] Routing ${meterType} recharge via Stronpower API (Volume: ${totalVolume})`);
+                    apiResult = await tokenMeterService.rechargeTokenMeter({
+                        meterNumber: txRecord.meterNumber,
+                        amount: totalVolume,
+                        customerRef: activeReference,
+                        isVendByUnit: true
+                    });
+                }
+
+                let meter = await prisma.gasMeter.findFirst({
+                    where: {
+                        OR: [
+                            { meterNumber: txRecord.meterNumber },
+                            { meterNumber: `MTR-${txRecord.meterNumber}` },
+                            { meterNumber: txRecord.meterNumber.replace(/^MTR-/i, '') }
+                        ]
+                    }
+                });
+
+                let pushResult = { success: true, error: null as any };
+                if (apiResult.success && meter && meter.imei && apiResult.token) {
+                    const { default: pipingMeterService } = await import('../services/pipingMeter.service');
+                    console.log(`[Webhook GasRecharge] Meter ${txRecord.meterNumber} has IMEI ${meter.imei}. Triggering remote token push...`);
+                    try {
+                        const pushRes = await pipingMeterService.pushTokenToImei(meter.imei, apiResult.token);
+                        if (pushRes && !pushRes.success) {
+                            pushResult.success = false;
+                            pushResult.error = pushRes.error || 'Remote push rejected by GPRS management system';
+                        }
+                    } catch (pushErr: any) {
+                        pushResult.success = false;
+                        pushResult.error = pushErr.message || 'Remote push connection error';
+                    }
+                }
+
+                const isFullySuccessful = apiResult.success && pushResult.success;
+                const finalStatus = isFullySuccessful ? 'SUCCESS' : 'FAILED';
+                const finalErrorMsg = isFullySuccessful ? null : (pushResult.error || apiResult.error || 'Meter recharge failed');
+
+                await prisma.gasRechargeTransaction.update({
+                    where: { id: txRecord.id },
+                    data: {
+                        status: finalStatus,
+                        tokenValue: apiResult.token || null,
+                        errorMessage: finalErrorMsg
+                    }
+                });
+
+                if (isFullySuccessful) {
+                    let retailerId = 1;
+                    if (txRecord.operatorId) {
+                        const rp = await prisma.retailerProfile.findFirst({ where: { userId: txRecord.operatorId } });
+                        if (rp) retailerId = rp.id;
+                    }
+
+                    await prisma.sale.create({
+                        data: {
+                            consumerId: txRecord.customerId || undefined,
+                            retailerId: retailerId,
+                            totalAmount: txRecord.amount,
+                            status: 'completed',
+                            paymentMethod: txRecord.paymentMethod,
+                            meterId: txRecord.meterNumber,
+                            saleItems: {
+                                create: [{
+                                    productId: 1, 
+                                    quantity: totalVolume,
+                                    price: gasPrice
+                                }]
+                            }
+                        }
+                    });
+                }
+
+            } catch (err: any) {
+                console.error('[Webhook GasRecharge Error]:', err.message);
+                await prisma.gasRechargeTransaction.update({
+                    where: { id: txRecord.id },
+                    data: {
+                        status: 'FAILED',
+                        errorMessage: err.message
+                    }
+                });
+            }
+        }
+    }
     else if (activeReference.startsWith('GAS-')) {
-        // Gas Topup handled via metadata in CustomerOrder
         const order = await prisma.customerOrder.findFirst({
             where: { metadata: { contains: activeReference } } 
         });
@@ -127,7 +245,6 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                     data: { status: 'completed' }
                 });
                 
-                // Find associated GasTopup
                 const topup = await tx.gasTopup.findFirst({
                     where: { orderId: order.id.toString() }
                 });
