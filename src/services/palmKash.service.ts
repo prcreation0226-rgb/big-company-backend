@@ -245,6 +245,12 @@ class PalmKashService {
     if (!this.secretKey) {
       console.error('[PalmKash] PALMKASH_SECRET_KEY is missing');
     }
+
+    console.log("PalmKash Secret Debug", {
+        length: this.secretKey.length,
+        first5: this.secretKey.substring(0,5),
+        last5: this.secretKey.substring(this.secretKey.length - 5)
+    });
   }
 
   async initiatePayment(params: {
