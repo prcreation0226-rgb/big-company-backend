@@ -325,6 +325,13 @@ class PalmKashService {
         timestamp
       });
 
+      console.log("PalmKash Auth Debug", {
+        merchantId: this.clientId,
+        timestamp,
+        body: bodyString,
+        signature
+      });
+
       const response = await axios.post(url, bodyString, {
         headers: {
           'Content-Type': 'application/json',
