@@ -246,11 +246,6 @@ class PalmKashService {
       console.error('[PalmKash] PALMKASH_SECRET_KEY is missing');
     }
 
-    console.log("PalmKash Secret Debug", {
-        length: this.secretKey.length,
-        first5: this.secretKey.substring(0,5),
-        last5: this.secretKey.substring(this.secretKey.length - 5)
-    });
   }
 
   async initiatePayment(params: {
@@ -327,27 +322,7 @@ class PalmKashService {
         .update(Buffer.from(payload, 'utf8'))
         .digest('hex');
 
-      console.log("PalmKash Headers Debug", {
-        merchantKey: this.clientId,
-        timestamp,
-        signature
-      });
 
-      console.log('[PalmKash] Sending payment request', {
-        url,
-        environment: this.env,
-        referenceId: params.referenceId,
-        phone,
-        amount: params.amount,
-        timestamp
-      });
-
-      console.log("PalmKash Auth Debug", {
-        merchantId: this.clientId,
-        timestamp,
-        body: bodyString,
-        signature
-      });
 
       const response = await axios.post(url, bodyString, {
         headers: {

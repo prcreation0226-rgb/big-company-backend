@@ -266,6 +266,16 @@ export const initiateGasMeterRecharge = async (req: AuthRequest, res: Response) 
         return res.status(500).json({ success: false, error: 'Failed to log recharge transaction.' });
     }
 
+    if (paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel') {
+        return res.json({
+            success: true,
+            status: 'PENDING_PAYMENT',
+            message: 'Payment initiated. Please approve the prompt on your phone to complete the recharge.',
+            transactionId: txRecord.id,
+            apiReference: customerRef
+        });
+    }
+
     // --- STEP 3: Call the appropriate Meter API (routed by provider) ---
     let apiResult: any;
 
