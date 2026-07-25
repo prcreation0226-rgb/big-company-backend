@@ -120,6 +120,9 @@ class PalmKashService {
       console.log('Status Code:', response.status);
       console.log('Response Headers:', JSON.stringify(response.headers, null, 2));
       console.log('Content-Type:', response.headers['content-type']);
+      console.log(response.status);
+      console.log(response.headers);
+      console.log(response.data);
       console.log('-------------------------------------');
 
       // Check for Cloudflare/Non-JSON response
@@ -152,6 +155,9 @@ class PalmKashService {
         message: response.data.message || 'Payment initiated'
       };
     } catch (error: any) {
+      console.log("Status:", error.response?.status);
+      console.log("Headers:", error.response?.headers);
+      console.log("Body:", error.response?.data);
       console.error('PalmKash Payment Error:', error.response?.data || error.message);
       await monitoringService.reportApiFailure('PALMKASH_API', error.message || 'PalmKash connection failed');
 
@@ -191,9 +197,15 @@ class PalmKashService {
           'Accept': 'application/json'
         }
       });
+      console.log(response.status);
+      console.log(response.headers);
+      console.log(response.data);
       await monitoringService.reportApiRecovery('PALMKASH_API');
       return response.data; // { status: 'SUCCESS' | 'FAILED' | 'PENDING', ... }
     } catch (error: any) {
+      console.log("Status:", error.response?.status);
+      console.log("Headers:", error.response?.headers);
+      console.log("Body:", error.response?.data);
       console.error('PalmKash Verify Error:', error.response?.data || error.message);
       await monitoringService.reportApiFailure('PALMKASH_API', error.message || 'PalmKash verify failed');
       return { status: 'ERROR', message: error.message };
