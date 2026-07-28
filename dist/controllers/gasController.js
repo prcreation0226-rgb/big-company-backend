@@ -270,6 +270,7 @@ const removeGasMeter = (req, res) => __awaiter(void 0, void 0, void 0, function*
 exports.removeGasMeter = removeGasMeter;
 // Topup gas
 const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     try {
         const userId = req.user.id;
         const { meter_number, amount, payment_method } = req.body;
@@ -297,9 +298,27 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
         const config = yield prisma_1.default.systemConfig.findFirst();
         const gasPrice = (config === null || config === void 0 ? void 0 : config.gasPricePerM3) || Number(process.env.GAS_PRICE_PER_M3) || 3250;
         const units = Number((amount / gasPrice).toFixed(4)); // Ensure clean precision
+        const isMobileMoney = payment_method === 'mobile_money';
+        // For mobile_money: call PalmKash FIRST before creating any DB records
+        // This way, if PalmKash fails, nothing is created in the DB (no orphans)
+        let palmKashRef = null;
+        let palmKashTransactionId = null;
+        if (isMobileMoney) {
+            palmKashRef = `GAS-${Date.now()}`;
+            const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
+            const pmResult = yield palmKash.initiatePayment({
+                amount: amount,
+                phoneNumber: req.body.phone || ((_a = consumerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || req.body.customer_phone || '',
+                referenceId: palmKashRef,
+                description: `Gas topup for meter ${meter_number}`
+            });
+            if (!pmResult.success) {
+                return res.status(400).json({ success: false, error: pmResult.error || 'PalmKash payment failed' });
+            }
+            palmKashTransactionId = pmResult.transactionId;
+        }
         const result = yield prisma_1.default.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
-            var _a;
-            // Create topup record
+            // Create topup record — status depends on payment method
             const topup = yield tx.gasTopup.create({
                 data: {
                     consumerId: consumerProfile.id,
@@ -307,15 +326,15 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                     amount,
                     units,
                     currency: 'RWF',
-                    status: 'Pending'
+                    status: isMobileMoney ? 'pending' : 'Pending'
                 }
             });
-            // Create customer order
+            // Create customer order — correct status from the start
             const order = yield tx.customerOrder.create({
                 data: {
                     consumerId: consumerProfile.id,
                     orderType: 'gas',
-                    status: 'completed',
+                    status: isMobileMoney ? 'pending' : 'completed',
                     amount,
                     currency: 'RWF',
                     items: JSON.stringify([{
@@ -323,10 +342,26 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                             units,
                             amount
                         }]),
-                    metadata: JSON.stringify({ paymentMethod: payment_method || 'wallet' })
+                    metadata: JSON.stringify(isMobileMoney
+                        ? {
+                            paymentMethod: 'mobile_money',
+                            gateway: 'palmkash',
+                            externalRef: palmKashTransactionId,
+                            reference: palmKashRef // Webhook uses startsWith('GAS-') on this
+                        }
+                        : { paymentMethod: payment_method || 'wallet' })
                 }
             });
-            // Check balance and deduct based on payment method
+            // Also link orderId to topup for mobile_money
+            if (isMobileMoney) {
+                yield tx.gasTopup.update({
+                    where: { id: topup.id },
+                    data: { orderId: order.id.toString() }
+                });
+                // Return early — webhook will complete after PIN confirmed
+                return { topup, order, newBalance: 0, rewardUnits: 0, isPending: true, transactionId: palmKashRef };
+            }
+            // Non-MoMo: process payment immediately
             let newBalance = 0;
             if (payment_method === 'wallet' || !payment_method) {
                 const wallet = yield tx.wallet.findFirst({
@@ -335,13 +370,11 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                 if (!wallet || wallet.balance < amount) {
                     throw new Error('Insufficient wallet balance');
                 }
-                // Deduct from wallet
                 const updatedWallet = yield tx.wallet.update({
                     where: { id: wallet.id },
                     data: { balance: { decrement: amount } }
                 });
                 newBalance = updatedWallet.balance;
-                // Create wallet transaction
                 yield tx.walletTransaction.create({
                     data: {
                         walletId: wallet.id,
@@ -365,57 +398,15 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                 if (card.balance < amount) {
                     throw new Error('Insufficient NFC card balance');
                 }
-                // Deduct from card
                 yield tx.nfcCard.update({
                     where: { id: card.id },
                     data: { balance: { decrement: amount } }
                 });
-                // Get current wallet balance for response
                 const wallet = yield tx.wallet.findFirst({
                     where: { consumerId: consumerProfile.id, type: 'dashboard_wallet' }
                 });
                 newBalance = (wallet === null || wallet === void 0 ? void 0 : wallet.balance) || 0;
             }
-            else if (payment_method === 'mobile_money') {
-                // ==========================================
-                // PALMKASH INTEGRATION (Pending Status)
-                // ==========================================
-                const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
-                const pmResult = yield palmKash.initiatePayment({
-                    amount: amount,
-                    phoneNumber: req.body.phone || ((_a = consumerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || req.body.customer_phone || '',
-                    referenceId: `GAS-${Date.now()}`,
-                    description: `Gas topup for meter ${meter_number}`
-                });
-                if (!pmResult.success) {
-                    throw new Error(pmResult.error || 'PalmKash payment failed');
-                }
-                // For order metadata and reference - SAVE IT TO DB!
-                // We create a pending order and topup
-                // We must update the objects before returning from transaction or rely on create override?
-                // Actually, Prisma create is already done above with 'completed' status.
-                // We need to modify the create call logic OR update it here.
-                // Since 'order' and 'topup' are already created above (lines 182, 194), we need to update them.
-                yield tx.gasTopup.update({
-                    where: { id: topup.id },
-                    data: { status: 'pending', orderId: order.id.toString() } // Ensure orderId is linked
-                });
-                yield tx.customerOrder.update({
-                    where: { id: order.id },
-                    data: {
-                        status: 'pending',
-                        metadata: JSON.stringify({
-                            paymentMethod: 'mobile_money',
-                            gateway: 'palmkash',
-                            externalRef: pmResult.transactionId,
-                            reference: pmResult.transactionId // Webhook looks for this
-                        })
-                    }
-                });
-                // Return special result indicating pending
-                return { topup, order, newBalance: 0, rewardUnits: 0, isPending: true, transactionId: pmResult.transactionId };
-            }
-            // Award gas rewards (disabled - rewards only for shopping)
             const rewardUnits = 0;
             return { topup, order, newBalance, rewardUnits };
         }));
@@ -634,6 +625,7 @@ const getGasUsage = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                     units: t.units,
                     currency: t.currency,
                     status: t.status,
+                    token_value: t.orderId,
                     created_at: t.createdAt
                 });
             })

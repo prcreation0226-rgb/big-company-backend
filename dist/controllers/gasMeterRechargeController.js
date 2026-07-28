@@ -73,8 +73,8 @@ const initiateGasMeterRecharge = (req, res) => __awaiter(void 0, void 0, void 0,
      } = req.body;
     // Always sanitize — trim whitespace, remove any MTR- prefix
     const meterNumber = String(req.body.meterNumber || '').trim().replace(/^MTR-/i, '');
-    const customerRef = `GASRCH-${meterType}-${Date.now()}`;
     const selectedProvider = (provider || 'stronpower').toLowerCase();
+    const customerRef = `GASRCH-${meterType}-${selectedProvider}-${Date.now()}`;
     const isPushToken = meterType === 'PIPING' && !!token;
     // --- Validate required fields ---
     if (!meterNumber || !meterType || (!isPushToken && !amount)) {
@@ -117,6 +117,15 @@ const initiateGasMeterRecharge = (req, res) => __awaiter(void 0, void 0, void 0,
                 success: false,
                 error: 'Minimum volume for recharge is 0.1 m³.',
             });
+        }
+        // Resolve consumer profile ID if authenticated
+        if (userId) {
+            const consumerProfile = yield prisma_1.default.consumerProfile.findUnique({
+                where: { userId },
+            });
+            if (consumerProfile) {
+                consumerProfileId = consumerProfile.id;
+            }
         }
         // Only deduct if authenticated and using a payment method
         if (userId && (paymentMethod === 'wallet' || paymentMethod === 'credit_wallet' || paymentMethod === 'gas_rewards' || paymentMethod === 'nfc_card')) {
@@ -275,6 +284,15 @@ const initiateGasMeterRecharge = (req, res) => __awaiter(void 0, void 0, void 0,
     catch (dbError) {
         console.error('[GasRecharge] Failed to create transaction record:', dbError.message);
         return res.status(500).json({ success: false, error: 'Failed to log recharge transaction.' });
+    }
+    if (paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel') {
+        return res.json({
+            success: true,
+            status: 'PENDING_PAYMENT',
+            message: 'Payment initiated. Please approve the prompt on your phone to complete the recharge.',
+            transactionId: txRecord.id,
+            apiReference: customerRef
+        });
     }
     // --- STEP 3: Call the appropriate Meter API (routed by provider) ---
     let apiResult;

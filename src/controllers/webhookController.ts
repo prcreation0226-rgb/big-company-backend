@@ -256,6 +256,32 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                             }
                         }
                     });
+
+                    try {
+                        const consumer = await prisma.consumerProfile.findFirst({
+                            where: { id: txRecord.customerId || undefined },
+                            include: { user: true }
+                        });
+                        if (consumer) {
+                            const { emailQueue } = await import('../queues/email.queue');
+                            await emailQueue.add('gas-recharge-success', {
+                                to: consumer.user.phone || consumer.user.email || '',
+                                templateType: 'gas-recharge-success',
+                                data: {
+                                    customer_name: consumer.fullName || consumer.user.name || 'Valued Customer',
+                                    meter_name: 'Gas Meter',
+                                    meter_id: txRecord.meterNumber,
+                                    amount: txRecord.amount.toLocaleString(),
+                                    token: apiResult.token || 'Remote GPRS Topup',
+                                    transaction_id: txRecord.id.toString(),
+                                    volume: totalVolume
+                                },
+                                relatedEntity: { type: 'USER', id: consumer.userId.toString() }
+                            });
+                        }
+                    } catch (notifyErr) {
+                        console.error('Failed to trigger gas recharge notification:', notifyErr);
+                    }
                 }
 
             } catch (err: any) {
@@ -366,7 +392,7 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                                     transaction_id: order.id.toString(),
                                     volume: initialTopup.units
                                 },
-                                relatedEntity: { type: 'GAS_ORDER', id: order.id.toString() }
+                                relatedEntity: { type: 'USER', id: consumerProfile.userId.toString() }
                             });
                             
                             if (consumerProfile.user.email) {
@@ -382,7 +408,7 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                                         transaction_id: order.id.toString(),
                                         volume: initialTopup.units
                                     },
-                                    relatedEntity: { type: 'GAS_ORDER', id: order.id.toString() }
+                                    relatedEntity: { type: 'USER', id: consumerProfile.userId.toString() }
                                 });
                             }
                         } catch (notifyErr) {
@@ -411,11 +437,11 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
            console.log(`✅ [Webhook] Completing sale for reference: ${activeReference}`);
            
            await prisma.$transaction(async (tx) => {
-               // 1. Update status
-               await tx.sale.update({
-                   where: { id: sale.id },
-                   data: { status: 'completed' }
-               });
+                // 1. Update status
+                await tx.sale.update({
+                    where: { id: sale.id },
+                    data: { status: 'pending' }
+                });
 
                // 2. Decrement Stock
                for (const item of sale.saleItems) {

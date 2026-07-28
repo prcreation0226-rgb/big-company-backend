@@ -344,25 +344,42 @@ const topupWallet = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         // PALMKASH INTEGRATION
         // ==========================================
         let externalId = null;
-        let paymentStatus = 'completed'; // Default for non-api flows
-        if (payment_method === 'mobile_money' || payment_method === 'momo' || payment_method === 'airtel' || payment_method === 'airtel' || payment_method === 'airtel') {
+        let paymentStatus = 'completed';
+        const isMobileMoney = payment_method === 'mobile_money' || payment_method === 'momo' || payment_method === 'airtel';
+        if (isMobileMoney) {
             const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
+            const referenceId = `TOPUP-${Date.now()}`;
             const pmResult = yield palmKash.initiatePayment({
                 amount: amount,
                 phoneNumber: phone || ((_a = consumerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || '',
-                referenceId: `TOPUP-${Date.now()}`,
+                referenceId: referenceId,
                 description: `Wallet topup for ${consumerProfile.fullName || 'Customer'}`
             });
             if (!pmResult.success) {
                 return res.status(400).json({ success: false, error: pmResult.error });
             }
             externalId = pmResult.transactionId;
-            // In Sandbox, if it returns SUCCESS immediately, we proceed. 
-            // If it returns PENDING, we might still update balance for "Simulated Success" if that was the previous behavior, 
-            // but the prompt says replace gateway layer.
-            // Let's assume we proceed if SUCCESS or PENDING (for UX consistency in sandbox)
+            paymentStatus = 'pending';
+            // Create Pending transaction record without updating balance
+            yield prisma_1.default.walletTransaction.create({
+                data: {
+                    walletId: wallet.id,
+                    type: 'topup',
+                    amount,
+                    description: `Wallet topup via ${payment_method || 'mobile money'}`,
+                    status: 'pending',
+                    reference: referenceId
+                }
+            });
+            return res.json({
+                success: true,
+                message: 'Payment initiated. Please approve on your phone.',
+                transactionId: referenceId,
+                externalRef: externalId,
+                status: 'pending'
+            });
         }
-        // Update wallet balance
+        // Update wallet balance for non-api payments
         const updatedWallet = yield prisma_1.default.wallet.update({
             where: { id: wallet.id },
             data: { balance: { increment: amount } }

@@ -92,6 +92,16 @@ export const initiateGasMeterRecharge = async (req: AuthRequest, res: Response) 
             });
         }
 
+        // Resolve consumer profile ID if authenticated
+        if (userId) {
+            const consumerProfile = await prisma.consumerProfile.findUnique({
+                where: { userId },
+            });
+            if (consumerProfile) {
+                consumerProfileId = consumerProfile.id;
+            }
+        }
+
         // Only deduct if authenticated and using a payment method
         if (userId && (paymentMethod === 'wallet' || paymentMethod === 'credit_wallet' || paymentMethod === 'gas_rewards' || paymentMethod === 'nfc_card')) {
             const consumerProfile = await prisma.consumerProfile.findUnique({

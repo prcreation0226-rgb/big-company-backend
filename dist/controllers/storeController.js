@@ -87,10 +87,12 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             log('Mobile money detected, importing palmKash service...');
             const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
             log('PalmKash service imported');
+            // Store our own reference in ordRef so meterId = ordRef (reliable for webhook lookup)
+            const ordRef = `ORD-${Date.now()}`;
             const pmResult = yield palmKash.initiatePayment({
                 amount: total,
                 phoneNumber: phone || ((_a = consumerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || '',
-                referenceId: `ORD-${Date.now()}`,
+                referenceId: ordRef,
                 description: `Retail Order Payment`
             });
             log(`PalmKash result: ${JSON.stringify(pmResult)}`);
@@ -98,7 +100,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                 log('PalmKash failed, returning 400');
                 return res.status(400).json({ success: false, error: pmResult.error });
             }
-            externalRef = pmResult.transactionId;
+            externalRef = ordRef; // Store OUR reference (not PalmKash's ID) so webhook can find it via meterId
         }
         log('Checking for retailerId...');
         if (!retailerId) {
@@ -330,12 +332,15 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                     throw new Error(`Insufficient stock for product: ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
                 }
             }
-            console.log('Decrementing stock...');
-            for (const item of items) {
-                yield tx.product.update({
-                    where: { id: Number(item.productId) },
-                    data: { stock: { decrement: item.quantity } }
-                });
+            const isMobileMoney = paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel';
+            if (!isMobileMoney) {
+                console.log('Decrementing stock...');
+                for (const item of items) {
+                    yield tx.product.update({
+                        where: { id: Number(item.productId) },
+                        data: { stock: { decrement: item.quantity } }
+                    });
+                }
             }
             // 4. Create Sale Record
             console.log('Creating sale record...');
@@ -344,10 +349,11 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                     consumerId: consumerProfile.id,
                     retailerId: Number(retailerId),
                     totalAmount: total,
-                    status: 'pending',
+                    status: isMobileMoney ? 'pending_payment' : 'pending',
                     paymentMethod: paymentMethod,
                     // Store external PalmKash reference or legacy meterId
                     meterId: (externalRef || meterId || null),
+                    notes: isMobileMoney ? JSON.stringify({ gasRewardWalletId: targetRewardId, rewardConsumerId: rewardConsumerId }) : null,
                     saleItems: {
                         create: items.map((item) => ({
                             productId: item.productId,
@@ -359,7 +365,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                 include: { saleItems: true }
             });
             // 4. CREDIT GAS REWARDS
-            if (shouldCalculateReward) {
+            if (shouldCalculateReward && !isMobileMoney) {
                 console.log('Calculating gas rewards...');
                 // Calculate Profit from items using product costPrice (wholesaler price)
                 const productIds = items.map((item) => Number(item.productId));
@@ -1202,19 +1208,40 @@ const repayLoan = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
         // ==========================================
         // PALMKASH INTEGRATION
         // ==========================================
-        let externalRef = null;
-        if (payment_method === 'mobile_money' || payment_method === 'momo' || payment_method === 'airtel' || payment_method === 'airtel' || payment_method === 'airtel') {
+        const isMobileMoney = payment_method === 'mobile_money' || payment_method === 'momo' || payment_method === 'airtel';
+        if (isMobileMoney) {
+            const creditWallet = yield prisma_1.default.wallet.findFirst({
+                where: { consumerId: consumerProfile.id, type: 'credit_wallet' }
+            });
+            if (!creditWallet) {
+                return res.status(400).json({ error: 'Credit wallet not found' });
+            }
+            const transactionRef = `CREPAY-${Date.now()}`;
             const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
             const pmResult = yield palmKash.initiatePayment({
                 amount: parseFloat(amount),
                 phoneNumber: ((_a = consumerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || req.body.phone || '',
-                referenceId: `CREPAY-${Date.now()}`,
+                referenceId: transactionRef,
                 description: `Loan Repayment for Loan #${id}`
             });
             if (!pmResult.success) {
                 return res.status(400).json({ success: false, error: pmResult.error });
             }
-            externalRef = pmResult.transactionId;
+            yield prisma_1.default.walletTransaction.create({
+                data: {
+                    walletId: creditWallet.id,
+                    type: 'loan_repayment_replenish',
+                    amount: parseFloat(amount),
+                    description: `Loan Repayment via Mobile Money`,
+                    status: 'pending',
+                    reference: `CREPAY-${id}-${transactionRef}`
+                }
+            });
+            return res.json({
+                success: true,
+                message: 'Payment initiated. Please approve the prompt on your phone.',
+                status: 'pending'
+            });
         }
         // Move validation OUTSIDE transaction to avoid multiple response headers being sent
         if (payment_method === 'wallet') {
@@ -1317,8 +1344,12 @@ const repayLoan = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             // 5. Check if fully paid (Including Interest)
             const repayments = yield prisma.walletTransaction.findMany({
                 where: {
-                    reference: loan.id.toString(),
-                    type: 'loan_repayment_replenish'
+                    type: 'loan_repayment_replenish',
+                    status: 'completed',
+                    OR: [
+                        { reference: loan.id.toString() },
+                        { reference: { startsWith: `CREPAY-${loan.id}-` } }
+                    ]
                 }
             });
             const totalPaid = repayments.reduce((sum, t) => sum + t.amount, 0);
@@ -1364,7 +1395,14 @@ const getActiveLoanLedger = (req, res) => __awaiter(void 0, void 0, void 0, func
         }
         // Calculate details
         const repayments = yield prisma_1.default.walletTransaction.findMany({
-            where: { reference: loan.id.toString(), type: 'loan_repayment_replenish' }
+            where: {
+                type: 'loan_repayment_replenish',
+                status: 'completed',
+                OR: [
+                    { reference: loan.id.toString() },
+                    { reference: { startsWith: `CREPAY-${loan.id}-` } }
+                ]
+            }
         });
         const paidAmount = repayments.reduce((sum, t) => sum + t.amount, 0);
         const config = yield prisma_1.default.systemConfig.findFirst();

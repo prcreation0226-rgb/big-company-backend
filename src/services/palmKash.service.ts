@@ -351,7 +351,7 @@ class PalmKashService {
           'User-Agent': 'BigCompanyBackend/1.0'
         },
 
-        timeout: 30_000,
+        timeout: 10_000,
 
         // Allows us to inspect 4xx responses without throwing.
         validateStatus: status => status < 500,

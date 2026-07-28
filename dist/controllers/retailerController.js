@@ -987,22 +987,26 @@ const createSale = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
                 });
                 consumerId = consumer.id;
             }
+            const { gasRewardWalletId, gas_meter_id } = req.body;
+            const targetRewardId = gasRewardWalletId || gas_meter_id;
             // --- Handle PalmKash (Mobile Money) ---
             let externalRef = null;
             if (payment_method === 'mobile_money' || payment_method === 'momo' || payment_method === 'airtel' || payment_method === 'airtel' || payment_method === 'airtel') {
                 if (!customer_phone)
                     throw new Error('Customer phone required for mobile money payment');
                 const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
+                // Use posRef as our own reference stored in meterId — reliable for webhook lookup
+                const posRef = `POS-${Date.now()}`;
                 const pmResult = yield palmKash.initiatePayment({
                     amount: total,
                     phoneNumber: customer_phone,
-                    referenceId: `POS-${Date.now()}`,
+                    referenceId: posRef,
                     description: `POS Sale at ${retailerProfile.shopName}`
                 });
                 if (!pmResult.success) {
                     throw new Error(pmResult.error || 'PalmKash payment initiation failed');
                 }
-                externalRef = pmResult.transactionId;
+                externalRef = posRef; // Store OUR reference (not PalmKash's ID) so webhook finds it via meterId
                 // Try to identify consumer for rewards
                 const consumer = yield prisma.consumerProfile.findFirst({
                     where: { user: { phone: customer_phone } }
@@ -1011,14 +1015,16 @@ const createSale = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
                     consumerId = consumer.id;
             }
             // Create Sale Record
+            const isMobileMoney = payment_method === 'mobile_money' || payment_method === 'momo' || payment_method === 'airtel';
             const sale = yield prisma.sale.create({
                 data: {
                     retailerId: retailerProfile.id,
                     consumerId: consumerId,
                     totalAmount: total,
                     paymentMethod: payment_method,
-                    status: 'completed', // In Sandbox we assume success for now to keep flow identical
+                    status: isMobileMoney ? 'pending_payment' : 'completed',
                     meterId: externalRef || (payment_method === 'nfc' ? payment_details === null || payment_details === void 0 ? void 0 : payment_details.uid : null), // Store Ref or Card UID
+                    notes: isMobileMoney ? JSON.stringify({ gasRewardWalletId: targetRewardId, consumerId: consumerId }) : null,
                     saleItems: {
                         create: items.map((item) => ({
                             productId: Number(item.product_id),
@@ -1029,11 +1035,13 @@ const createSale = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
                 }
             });
             // Update Stock
-            for (const item of items) {
-                yield prisma.product.update({
-                    where: { id: Number(item.product_id) },
-                    data: { stock: { decrement: item.quantity } }
-                });
+            if (!isMobileMoney) {
+                for (const item of items) {
+                    yield prisma.product.update({
+                        where: { id: Number(item.product_id) },
+                        data: { stock: { decrement: item.quantity } }
+                    });
+                }
             }
             // Log Transaction if linked to consumer
             if (consumerId && (['wallet', 'dashboard_wallet', 'credit_wallet', 'nfc'].includes(payment_method))) {
@@ -1058,10 +1066,8 @@ const createSale = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
             // ==========================================
             // GAS REWARD LOGIC (POS)
             // ==========================================
-            const { gasRewardWalletId, gas_meter_id } = req.body; // Accept both for backward compatibility
-            const targetRewardId = gasRewardWalletId || gas_meter_id;
             const isRewardEligible = ['dashboard_wallet', 'mobile_money', 'wallet'].includes(payment_method);
-            if (isRewardEligible && targetRewardId && consumerId) {
+            if (isRewardEligible && targetRewardId && consumerId && !isMobileMoney) {
                 // Calculate Profit
                 let totalProfit = 0;
                 for (const item of items) {
@@ -1178,6 +1184,7 @@ const updateSaleStatus = (req, res) => __awaiter(void 0, void 0, void 0, functio
         // State machine: pending -> confirmed/processing -> shipped -> ready -> completed / delivered
         // MAP: 'confirmed' or 'processing' will be treated as "Proceed" in UI
         const validTransitions = {
+            'pending_payment': ['cancelled'],
             'pending': ['confirmed', 'processing', 'cancelled'],
             'confirmed': ['shipped', 'ready', 'cancelled'],
             'processing': ['shipped', 'ready', 'cancelled'],
@@ -1530,7 +1537,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                 requiresLinking: true
             });
         }
-        const { items, totalAmount, paymentMethod = 'wallet' } = req.body;
+        const { items, totalAmount, paymentMethod = 'wallet', phone } = req.body;
         if (!items || items.length === 0) {
             return res.status(400).json({ error: 'Order must contain items' });
         }
@@ -1564,6 +1571,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         const result = yield prisma_1.default.$transaction((prisma) => __awaiter(void 0, void 0, void 0, function* () {
             var _a;
             // 1. Payment Processing Logic
+            let externalRef = null;
             if (paymentMethod === 'wallet') {
                 if (retailerProfile.walletBalance < totalAmount) {
                     throw new Error('Insufficient wallet balance');
@@ -1601,18 +1609,18 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                 // ==========================================
                 // PALMKASH INTEGRATION
                 // ==========================================
+                const transactionRef = `WHL-${Date.now()}`;
                 const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
                 const pmResult = yield palmKash.initiatePayment({
                     amount: totalAmount,
-                    phoneNumber: ((_a = retailerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || req.body.phone || '',
-                    referenceId: `WHL-${Date.now()}`,
+                    phoneNumber: phone || ((_a = retailerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || '',
+                    referenceId: transactionRef,
                     description: `Wholesale Order Payment`
                 });
                 if (!pmResult.success) {
                     throw new Error(pmResult.error || 'PalmKash payment initiation failed');
                 }
-                // Store reference in external location? Order doesn't have ref field.
-                // We can use a comment or just log it. In this app, many things use ID.
+                externalRef = transactionRef;
             }
             else {
                 throw new Error('Invalid payment method');
@@ -1625,6 +1633,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                     totalAmount: totalAmount,
                     paymentMethod: paymentMethod,
                     status: paymentMethod === 'momo' ? 'pending_payment' : 'pending',
+                    notes: externalRef,
                     orderItems: {
                         create: items.map((item) => ({
                             productId: item.product_id,
@@ -2037,22 +2046,40 @@ const makeRepayment = (req, res) => __awaiter(void 0, void 0, void 0, function* 
         const order = yield prisma_1.default.order.findUnique({ where: { id: Number(id) } });
         if (!order)
             return res.status(404).json({ error: 'Order not found' });
-        // 2. PalmKash Integration for MoMo
-        let externalRef = null;
-        if (paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel' || paymentMethod === 'airtel' || paymentMethod === 'airtel') {
+        // 2. PalmKash Integration for MoMo — create PENDING record and wait for webhook
+        const isMobileMoney = paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel';
+        if (isMobileMoney) {
+            // Use RREPAY-{orderId}-{timestamp} so webhook can extract the orderId
+            const transactionRef = `RREPAY-${order.id}-${Date.now()}`;
             const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
             const pmResult = yield palmKash.initiatePayment({
                 amount: parseFloat(amount),
                 phoneNumber: ((_a = retailerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || req.body.phone || '',
-                referenceId: `RREPAY-${Date.now()}`,
+                referenceId: transactionRef,
                 description: `Credit Repayment for Order #${id}`
             });
             if (!pmResult.success) {
                 return res.status(400).json({ success: false, error: pmResult.error });
             }
-            externalRef = pmResult.transactionId;
+            // Save PENDING record — webhook completes the actual DB update after PIN confirmed
+            yield prisma_1.default.walletTransaction.create({
+                data: {
+                    retailerId: retailerProfile.id,
+                    type: 'credit_repayment',
+                    amount: parseFloat(amount),
+                    description: `Credit Repayment for Order #${id} via MoMo`,
+                    reference: transactionRef,
+                    status: 'pending'
+                }
+            });
+            return res.json({
+                success: true,
+                status: 'pending',
+                message: 'Payment initiated. Please approve the prompt on your phone to complete the repayment.',
+                transactionRef
+            });
         }
-        // 3. Process Payment
+        // 3. Process Payment for non-MoMo methods (wallet, etc.)
         if (paymentMethod === 'wallet') {
             if (retailerProfile.walletBalance < amount) {
                 return res.status(400).json({ error: 'Insufficient wallet balance' });
@@ -2080,11 +2107,11 @@ const makeRepayment = (req, res) => __awaiter(void 0, void 0, void 0, function* 
                     }
                 });
             }
-            // Update Order Status (if fully paid) -- simplistic check
+            // Update Order Status (if fully paid)
             if (amount >= order.totalAmount) {
                 yield prisma.order.update({
                     where: { id: order.id },
-                    data: { status: 'completed' } // or 'paid'
+                    data: { status: 'completed' }
                 });
             }
         }));
@@ -2111,19 +2138,35 @@ const payCredit = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             return res.status(400).json({ error: 'Invalid repayment amount' });
         }
         // 1. PalmKash Integration for MoMo
-        let externalRef = null;
-        if (paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel' || paymentMethod === 'airtel' || paymentMethod === 'airtel') {
+        const isMobileMoney = paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel';
+        if (isMobileMoney) {
+            const transactionRef = `GCREPAY-${Date.now()}`;
             const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
             const pmResult = yield palmKash.initiatePayment({
                 amount: parseFloat(amount),
                 phoneNumber: phone || ((_a = retailerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || '',
-                referenceId: `GCREPAY-${Date.now()}`,
+                referenceId: transactionRef,
                 description: `General Credit Repayment`
             });
             if (!pmResult.success) {
                 return res.status(400).json({ success: false, error: pmResult.error });
             }
-            externalRef = pmResult.transactionId;
+            yield prisma_1.default.walletTransaction.create({
+                data: {
+                    retailerId: retailerProfile.id,
+                    type: 'credit_repayment',
+                    amount: parseFloat(amount),
+                    description: `Credit Repayment via Mobile Money`,
+                    reference: transactionRef,
+                    status: 'pending'
+                }
+            });
+            return res.json({
+                success: true,
+                message: 'Payment initiated. Please approve the prompt on your phone.',
+                transactionId: transactionRef,
+                status: 'pending'
+            });
         }
         // 2. Process Payment
         if (paymentMethod === 'wallet') {
@@ -2161,7 +2204,7 @@ const payCredit = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                     type: 'credit_repayment',
                     amount: amount,
                     description: `Credit Repayment via ${paymentMethod}`,
-                    reference: externalRef || `REPAY-${Date.now()}`,
+                    reference: `REPAY-${Date.now()}`,
                     status: 'completed'
                 }
             });
@@ -3668,28 +3711,45 @@ const payRetailerLoan = (req, res) => __awaiter(void 0, void 0, void 0, function
             return res.status(400).json({ error: 'Loan is already fully paid' });
         }
         const repaymentAmount = Math.min(amount, loan.remainingAmount);
-        // 1. PalmKash Integration for MoMo
-        let externalRef = null;
+        // 1. PalmKash Integration for MoMo — create PENDING record and wait for webhook
         if (paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel') {
+            // Use RLREPAY-{loanId}-{timestamp} so webhook can extract the loanId
+            const transactionRef = `RLREPAY-${loanId}-${Date.now()}`;
             const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
             const pmResult = yield palmKash.initiatePayment({
                 amount: parseFloat(repaymentAmount.toString()),
                 phoneNumber: phone || ((_a = retailerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || '',
-                referenceId: `RLREPAY-${Date.now()}`,
+                referenceId: transactionRef,
                 description: `Retailer Loan Repayment (Loan #${loanId})`
             });
             if (!pmResult.success) {
                 return res.status(400).json({ success: false, error: pmResult.error });
             }
-            externalRef = pmResult.transactionId;
+            // Save PENDING record — webhook completes the actual loan update after PIN confirmed
+            yield prisma_1.default.walletTransaction.create({
+                data: {
+                    retailerId: retailerProfile.id,
+                    type: 'credit_repayment',
+                    amount: repaymentAmount,
+                    description: `Loan #${loanId} Repayment via MoMo`,
+                    reference: transactionRef,
+                    status: 'pending'
+                }
+            });
+            return res.json({
+                success: true,
+                status: 'pending',
+                message: 'Payment initiated. Please approve the prompt on your phone to complete the loan repayment.',
+                transactionRef
+            });
         }
-        // 2. Wallet Balance Check
+        // 2. Wallet Balance Check (non-MoMo)
         if (paymentMethod === 'wallet') {
             if (retailerProfile.walletBalance < repaymentAmount) {
                 return res.status(400).json({ error: 'Insufficient wallet balance' });
             }
         }
-        // 3. Process Transaction
+        // 3. Process Transaction (non-MoMo)
         yield prisma_1.default.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             var _a, _b;
             // Debit wallet balance if chosen
@@ -3716,7 +3776,7 @@ const payRetailerLoan = (req, res) => __awaiter(void 0, void 0, void 0, function
                     type: 'credit_repayment',
                     amount: repaymentAmount,
                     description: `Loan #${loanId} Repayment via ${paymentMethod}`,
-                    reference: externalRef || `LNREPAY-${Date.now()}`,
+                    reference: `LNREPAY-${Date.now()}`,
                     status: 'completed'
                 }
             });
