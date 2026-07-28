@@ -340,7 +340,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
           consumerId: consumerProfile.id,
           retailerId: Number(retailerId),
           totalAmount: total,
-          status: 'pending',
+          status: isMobileMoney ? 'pending_payment' : 'pending',
           paymentMethod: paymentMethod,
           // Store external PalmKash reference or legacy meterId
           meterId: (externalRef || meterId || null) as string,

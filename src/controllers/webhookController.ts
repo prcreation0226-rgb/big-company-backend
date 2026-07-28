@@ -28,7 +28,22 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
     const isSuccess = normalizedStatus === 'success' || normalizedStatus === 'completed';
 
     if (!isSuccess) {
-       console.log(`ℹ️ [Webhook] Transaction ${activeReference} is not successful (Status: ${status}). No action taken.`);
+       console.log(`ℹ️ [Webhook] Transaction ${activeReference} is not successful (Status: ${status}).`);
+       if (activeReference && (activeReference.startsWith('ORD-') || activeReference.startsWith('POS-'))) {
+          const sale = await prisma.sale.findFirst({
+              where: { meterId: activeReference }
+          });
+          if (sale && sale.status === 'pending_payment') {
+              console.log(`[Webhook] Cancelling sale ${sale.id} due to failed/cancelled payment.`);
+              await prisma.sale.update({
+                  where: { id: sale.id },
+                  data: {
+                      status: 'cancelled',
+                      cancellationReason: `Payment failed/cancelled via Mobile Money (Status: ${status})`
+                  }
+              });
+          }
+       }
        return res.json({ success: true, message: 'Status recognized' });
     }
 

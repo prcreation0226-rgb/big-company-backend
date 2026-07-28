@@ -1290,6 +1290,7 @@ export const updateSaleStatus = async (req: AuthRequest, res: Response) => {
     // State machine: pending -> confirmed/processing -> shipped -> ready -> completed / delivered
     // MAP: 'confirmed' or 'processing' will be treated as "Proceed" in UI
     const validTransitions: Record<string, string[]> = {
+      'pending_payment': ['cancelled'],
       'pending': ['confirmed', 'processing', 'cancelled'],
       'confirmed': ['shipped', 'ready', 'cancelled'],
       'processing': ['shipped', 'ready', 'cancelled'],
