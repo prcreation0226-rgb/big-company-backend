@@ -43,7 +43,20 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                   }
               });
           }
-       }
+       } else if (activeReference && activeReference.startsWith('WHL-')) {
+           const order = await prisma.order.findFirst({
+               where: { notes: activeReference }
+           });
+           if (order && order.status === 'pending_payment') {
+               console.log(`[Webhook] Cancelling wholesale order ${order.id} due to failed/cancelled payment.`);
+               await prisma.order.update({
+                   where: { id: order.id },
+                   data: {
+                       status: 'cancelled'
+                   }
+               });
+           }
+        }
        return res.json({ success: true, message: 'Status recognized' });
     }
 
@@ -608,6 +621,18 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                        });
                    }
                }
+           });
+       }
+    }
+    else if (activeReference.startsWith('WHL-')) {
+       const order = await prisma.order.findFirst({
+           where: { notes: activeReference }
+       });
+       if (order && (order.status === 'pending' || order.status === 'pending_payment')) {
+           console.log(`✅ [Webhook] Completing wholesale order for reference: ${activeReference}`);
+           await prisma.order.update({
+               where: { id: order.id },
+               data: { status: 'completed' }
            });
        }
     }

@@ -1682,7 +1682,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const { items, totalAmount, paymentMethod = 'wallet' } = req.body;
+    const { items, totalAmount, paymentMethod = 'wallet', phone } = req.body;
 
     if (!items || items.length === 0) {
       return res.status(400).json({ error: 'Order must contain items' });
@@ -1762,7 +1762,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
         const palmKash = (await import('../services/palmKash.service')).default;
         const pmResult = await palmKash.initiatePayment({
           amount: totalAmount,
-          phoneNumber: (retailerProfile as any).user?.phone || req.body.phone || '',
+          phoneNumber: phone || (retailerProfile as any).user?.phone || '',
           referenceId: transactionRef,
           description: `Wholesale Order Payment`
         });
