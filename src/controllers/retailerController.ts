@@ -2228,24 +2228,44 @@ export const makeRepayment = async (req: AuthRequest, res: Response) => {
     const order = await prisma.order.findUnique({ where: { id: Number(id) } });
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    // 2. PalmKash Integration for MoMo
-    let externalRef = null;
-    if (paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel' || paymentMethod === 'airtel' || paymentMethod === 'airtel') {
+    // 2. PalmKash Integration for MoMo — create PENDING record and wait for webhook
+    const isMobileMoney = paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel';
+    if (isMobileMoney) {
+      // Use RREPAY-{orderId}-{timestamp} so webhook can extract the orderId
+      const transactionRef = `RREPAY-${order.id}-${Date.now()}`;
       const palmKash = (await import('../services/palmKash.service')).default;
       const pmResult = await palmKash.initiatePayment({
         amount: parseFloat(amount),
         phoneNumber: (retailerProfile as any).user?.phone || req.body.phone || '',
-        referenceId: `RREPAY-${Date.now()}`,
+        referenceId: transactionRef,
         description: `Credit Repayment for Order #${id}`
       });
 
       if (!pmResult.success) {
         return res.status(400).json({ success: false, error: pmResult.error });
       }
-      externalRef = pmResult.transactionId;
+
+      // Save PENDING record — webhook completes the actual DB update after PIN confirmed
+      await prisma.walletTransaction.create({
+        data: {
+          retailerId: retailerProfile.id,
+          type: 'credit_repayment',
+          amount: parseFloat(amount),
+          description: `Credit Repayment for Order #${id} via MoMo`,
+          reference: transactionRef,
+          status: 'pending'
+        }
+      });
+
+      return res.json({
+        success: true,
+        status: 'pending',
+        message: 'Payment initiated. Please approve the prompt on your phone to complete the repayment.',
+        transactionRef
+      });
     }
 
-    // 3. Process Payment
+    // 3. Process Payment for non-MoMo methods (wallet, etc.)
     if (paymentMethod === 'wallet') {
       if (retailerProfile.walletBalance < amount) {
         return res.status(400).json({ error: 'Insufficient wallet balance' });
@@ -2277,11 +2297,11 @@ export const makeRepayment = async (req: AuthRequest, res: Response) => {
         });
       }
 
-      // Update Order Status (if fully paid) -- simplistic check
+      // Update Order Status (if fully paid)
       if (amount >= order.totalAmount) {
         await prisma.order.update({
           where: { id: order.id },
-          data: { status: 'completed' } // or 'paid'
+          data: { status: 'completed' }
         });
       }
     });
@@ -4042,31 +4062,50 @@ export const payRetailerLoan = async (req: AuthRequest, res: Response) => {
 
     const repaymentAmount = Math.min(amount, loan.remainingAmount);
 
-    // 1. PalmKash Integration for MoMo
-    let externalRef = null;
+    // 1. PalmKash Integration for MoMo — create PENDING record and wait for webhook
     if (paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel') {
+      // Use RLREPAY-{loanId}-{timestamp} so webhook can extract the loanId
+      const transactionRef = `RLREPAY-${loanId}-${Date.now()}`;
       const palmKash = (await import('../services/palmKash.service')).default;
       const pmResult = await palmKash.initiatePayment({
         amount: parseFloat(repaymentAmount.toString()),
         phoneNumber: phone || (retailerProfile as any).user?.phone || '',
-        referenceId: `RLREPAY-${Date.now()}`,
+        referenceId: transactionRef,
         description: `Retailer Loan Repayment (Loan #${loanId})`
       });
 
       if (!pmResult.success) {
         return res.status(400).json({ success: false, error: pmResult.error });
       }
-      externalRef = pmResult.transactionId;
+
+      // Save PENDING record — webhook completes the actual loan update after PIN confirmed
+      await prisma.walletTransaction.create({
+        data: {
+          retailerId: retailerProfile.id,
+          type: 'credit_repayment',
+          amount: repaymentAmount,
+          description: `Loan #${loanId} Repayment via MoMo`,
+          reference: transactionRef,
+          status: 'pending'
+        }
+      });
+
+      return res.json({
+        success: true,
+        status: 'pending',
+        message: 'Payment initiated. Please approve the prompt on your phone to complete the loan repayment.',
+        transactionRef
+      });
     }
 
-    // 2. Wallet Balance Check
+    // 2. Wallet Balance Check (non-MoMo)
     if (paymentMethod === 'wallet') {
       if (retailerProfile.walletBalance < repaymentAmount) {
         return res.status(400).json({ error: 'Insufficient wallet balance' });
       }
     }
 
-    // 3. Process Transaction
+    // 3. Process Transaction (non-MoMo)
     await prisma.$transaction(async (tx) => {
       // Debit wallet balance if chosen
       if (paymentMethod === 'wallet') {
@@ -4095,7 +4134,7 @@ export const payRetailerLoan = async (req: AuthRequest, res: Response) => {
           type: 'credit_repayment',
           amount: repaymentAmount,
           description: `Loan #${loanId} Repayment via ${paymentMethod}`,
-          reference: externalRef || `LNREPAY-${Date.now()}`,
+          reference: `LNREPAY-${Date.now()}`,
           status: 'completed'
         }
       });

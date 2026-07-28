@@ -279,8 +279,31 @@ export const topupGas = async (req: AuthRequest, res: Response) => {
         const gasPrice = config?.gasPricePerM3 || Number(process.env.GAS_PRICE_PER_M3) || 3250;
         const units = Number((amount / gasPrice).toFixed(4)); // Ensure clean precision
 
+        const isMobileMoney = payment_method === 'mobile_money';
+
+        // For mobile_money: call PalmKash FIRST before creating any DB records
+        // This way, if PalmKash fails, nothing is created in the DB (no orphans)
+        let palmKashRef: string | null = null;
+        let palmKashTransactionId: string | null = null;
+
+        if (isMobileMoney) {
+            palmKashRef = `GAS-${Date.now()}`;
+            const palmKash = (await import('../services/palmKash.service')).default;
+            const pmResult = await palmKash.initiatePayment({
+                amount: amount,
+                phoneNumber: req.body.phone || (consumerProfile as any).user?.phone || req.body.customer_phone || '',
+                referenceId: palmKashRef,
+                description: `Gas topup for meter ${meter_number}`
+            });
+
+            if (!pmResult.success) {
+                return res.status(400).json({ success: false, error: pmResult.error || 'PalmKash payment failed' });
+            }
+            palmKashTransactionId = pmResult.transactionId;
+        }
+
         const result = await prisma.$transaction(async (tx) => {
-            // Create topup record
+            // Create topup record — status depends on payment method
             const topup = await tx.gasTopup.create({
                 data: {
                     consumerId: consumerProfile.id,
@@ -288,16 +311,16 @@ export const topupGas = async (req: AuthRequest, res: Response) => {
                     amount,
                     units,
                     currency: 'RWF',
-                    status: 'Pending'
+                    status: isMobileMoney ? 'pending' : 'Pending'
                 }
             });
 
-            // Create customer order
+            // Create customer order — correct status from the start
             const order = await tx.customerOrder.create({
                 data: {
                     consumerId: consumerProfile.id,
                     orderType: 'gas',
-                    status: 'completed',
+                    status: isMobileMoney ? 'pending' : 'completed',
                     amount,
                     currency: 'RWF',
                     items: JSON.stringify([{
@@ -305,11 +328,31 @@ export const topupGas = async (req: AuthRequest, res: Response) => {
                         units,
                         amount
                     }]),
-                    metadata: JSON.stringify({ paymentMethod: payment_method || 'wallet' })
+                    metadata: JSON.stringify(
+                        isMobileMoney
+                            ? {
+                                paymentMethod: 'mobile_money',
+                                gateway: 'palmkash',
+                                externalRef: palmKashTransactionId,
+                                reference: palmKashRef // Webhook uses startsWith('GAS-') on this
+                              }
+                            : { paymentMethod: payment_method || 'wallet' }
+                    )
                 }
             });
 
-            // Check balance and deduct based on payment method
+            // Also link orderId to topup for mobile_money
+            if (isMobileMoney) {
+                await tx.gasTopup.update({
+                    where: { id: topup.id },
+                    data: { orderId: order.id.toString() }
+                });
+
+                // Return early — webhook will complete after PIN confirmed
+                return { topup, order, newBalance: 0, rewardUnits: 0, isPending: true, transactionId: palmKashRef };
+            }
+
+            // Non-MoMo: process payment immediately
             let newBalance = 0;
 
             if (payment_method === 'wallet' || !payment_method) {
@@ -321,14 +364,12 @@ export const topupGas = async (req: AuthRequest, res: Response) => {
                     throw new Error('Insufficient wallet balance');
                 }
 
-                // Deduct from wallet
                 const updatedWallet = await tx.wallet.update({
                     where: { id: wallet.id },
                     data: { balance: { decrement: amount } }
                 });
                 newBalance = updatedWallet.balance;
 
-                // Create wallet transaction
                 await tx.walletTransaction.create({
                     data: {
                         walletId: wallet.id,
@@ -352,65 +393,18 @@ export const topupGas = async (req: AuthRequest, res: Response) => {
                     throw new Error('Insufficient NFC card balance');
                 }
 
-                // Deduct from card
                 await tx.nfcCard.update({
                     where: { id: card.id },
                     data: { balance: { decrement: amount } }
                 });
 
-                // Get current wallet balance for response
                 const wallet = await tx.wallet.findFirst({
                     where: { consumerId: consumerProfile.id, type: 'dashboard_wallet' }
                 });
                 newBalance = wallet?.balance || 0;
-            } else if (payment_method === 'mobile_money') {
-                // ==========================================
-                // PALMKASH INTEGRATION (Pending Status)
-                // ==========================================
-                const palmKash = (await import('../services/palmKash.service')).default;
-                const pmResult = await palmKash.initiatePayment({
-                    amount: amount,
-                    phoneNumber: req.body.phone || (consumerProfile as any).user?.phone || req.body.customer_phone || '',
-                    referenceId: `GAS-${Date.now()}`,
-                    description: `Gas topup for meter ${meter_number}`
-                });
-
-                if (!pmResult.success) {
-                    throw new Error(pmResult.error || 'PalmKash payment failed');
-                }
-
-                // For order metadata and reference - SAVE IT TO DB!
-                // We create a pending order and topup
-                // We must update the objects before returning from transaction or rely on create override?
-                // Actually, Prisma create is already done above with 'completed' status.
-                // We need to modify the create call logic OR update it here.
-                // Since 'order' and 'topup' are already created above (lines 182, 194), we need to update them.
-
-                await tx.gasTopup.update({
-                    where: { id: topup.id },
-                    data: { status: 'pending', orderId: order.id.toString() } // Ensure orderId is linked
-                });
-
-                await tx.customerOrder.update({
-                    where: { id: order.id },
-                    data: {
-                        status: 'pending',
-                        metadata: JSON.stringify({
-                            paymentMethod: 'mobile_money',
-                            gateway: 'palmkash',
-                            externalRef: pmResult.transactionId,
-                            reference: pmResult.transactionId // Webhook looks for this
-                        })
-                    }
-                });
-
-                // Return special result indicating pending
-                return { topup, order, newBalance: 0, rewardUnits: 0, isPending: true, transactionId: pmResult.transactionId };
             }
 
-            // Award gas rewards (disabled - rewards only for shopping)
             const rewardUnits = 0;
-
             return { topup, order, newBalance, rewardUnits };
         });
 

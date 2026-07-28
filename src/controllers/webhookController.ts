@@ -477,6 +477,132 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
            });
        }
     }
+    else if (activeReference.startsWith('RREPAY-')) {
+      // Retailer credit order repayment via MoMo
+      // Reference format: RREPAY-{orderId}-{timestamp}
+      console.log(`✅ [Webhook] Processing retailer order credit repayment for reference: ${activeReference}`);
+
+      // Find the pending walletTransaction saved when payment was initiated
+      const txRecord = await prisma.walletTransaction.findFirst({
+        where: { reference: activeReference, status: 'pending' }
+      });
+
+      if (txRecord && txRecord.retailerId) {
+        // Extract orderId from reference: RREPAY-{orderId}-{timestamp}
+        const parts = activeReference.split('-');
+        const orderId = Number(parts[1]);
+
+        await prisma.$transaction(async (tx) => {
+          // Mark pending walletTransaction as completed
+          await tx.walletTransaction.update({
+            where: { id: txRecord.id },
+            data: { status: 'completed' }
+          });
+
+          // Update retailer credit info
+          const creditInfo = await tx.retailerCredit.findUnique({
+            where: { retailerId: txRecord.retailerId! }
+          });
+          if (creditInfo) {
+            const newUsedCredit = Math.max(0, creditInfo.usedCredit - txRecord.amount);
+            const newAvailableCredit = Math.min(creditInfo.creditLimit, creditInfo.availableCredit + txRecord.amount);
+            await tx.retailerCredit.update({
+              where: { retailerId: txRecord.retailerId! },
+              data: { usedCredit: newUsedCredit, availableCredit: newAvailableCredit }
+            });
+          }
+
+          // Mark order as completed
+          const order = await tx.order.findUnique({ where: { id: orderId } });
+          if (order && txRecord.amount >= Number(order.totalAmount)) {
+            await tx.order.update({
+              where: { id: orderId },
+              data: { status: 'completed' }
+            });
+          }
+        });
+
+        // Notify retailer via email
+        const retailer = await prisma.retailerProfile.findUnique({
+          where: { id: txRecord.retailerId! },
+          include: { user: true }
+        });
+        if (retailer?.user?.email) {
+          await emailQueue.add('credit-payment-confirmation', {
+            to: retailer.user.email,
+            templateType: 'credit-payment-confirmation',
+            data: {
+              retail_name: retailer.shopName,
+              paid_amount: txRecord.amount.toLocaleString(),
+              remaining_balance: '0',
+              payment_date: new Date().toLocaleDateString(),
+              transaction_id: activeReference
+            },
+            relatedEntity: { type: 'TRANSACTION', id: txRecord.id.toString() }
+          });
+        }
+      } else {
+        console.warn(`⚠️ [Webhook] No pending RREPAY transaction found for reference: ${activeReference}`);
+      }
+    }
+    else if (activeReference.startsWith('RLREPAY-')) {
+      // Retailer loan repayment via MoMo
+      // Reference format: RLREPAY-{loanId}-{timestamp}
+      console.log(`✅ [Webhook] Processing retailer loan repayment for reference: ${activeReference}`);
+
+      // Find the pending walletTransaction saved when payment was initiated
+      const txRecord = await prisma.walletTransaction.findFirst({
+        where: { reference: activeReference, status: 'pending' }
+      });
+
+      if (txRecord && txRecord.retailerId) {
+        // Extract loanId from reference: RLREPAY-{loanId}-{timestamp}
+        const parts = activeReference.split('-');
+        const loanId = Number(parts[1]);
+
+        let newRemaining = 0;
+        await prisma.$transaction(async (tx) => {
+          // Mark the wallet transaction as completed
+          await tx.walletTransaction.update({
+            where: { id: txRecord.id },
+            data: { status: 'completed' }
+          });
+
+          // Update the specific loan by ID
+          const loan = await (tx as any).retailerLoan.findUnique({ where: { id: loanId } });
+          if (loan) {
+            newRemaining = Math.max(0, loan.remainingAmount - txRecord.amount);
+            const newStatus = newRemaining === 0 ? 'paid' : 'active';
+            await (tx as any).retailerLoan.update({
+              where: { id: loan.id },
+              data: { remainingAmount: newRemaining, status: newStatus }
+            });
+          }
+        });
+
+        // Notify retailer via email
+        const retailer = await prisma.retailerProfile.findUnique({
+          where: { id: txRecord.retailerId! },
+          include: { user: true }
+        });
+        if (retailer?.user?.email) {
+          await emailQueue.add('credit-payment-confirmation', {
+            to: retailer.user.email,
+            templateType: 'credit-payment-confirmation',
+            data: {
+              retail_name: retailer.shopName,
+              paid_amount: txRecord.amount.toLocaleString(),
+              remaining_balance: newRemaining.toLocaleString(),
+              payment_date: new Date().toLocaleDateString(),
+              transaction_id: activeReference
+            },
+            relatedEntity: { type: 'TRANSACTION', id: txRecord.id.toString() }
+          });
+        }
+      } else {
+        console.warn(`⚠️ [Webhook] No pending RLREPAY transaction found for reference: ${activeReference}`);
+      }
+    }
 
     // Always respond with 200 to acknowledge
     res.json({ success: true });
