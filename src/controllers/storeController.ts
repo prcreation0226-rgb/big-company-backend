@@ -319,12 +319,16 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
         }
       }
 
-      console.log('Decrementing stock...');
-      for (const item of items) {
-        await tx.product.update({
-          where: { id: Number(item.productId) },
-          data: { stock: { decrement: item.quantity } }
-        });
+      const isMobileMoney = paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel';
+
+      if (!isMobileMoney) {
+        console.log('Decrementing stock...');
+        for (const item of items) {
+          await tx.product.update({
+            where: { id: Number(item.productId) },
+            data: { stock: { decrement: item.quantity } }
+          });
+        }
       }
 
       // 4. Create Sale Record
@@ -338,6 +342,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
           paymentMethod: paymentMethod,
           // Store external PalmKash reference or legacy meterId
           meterId: (externalRef || meterId || null) as string,
+          notes: isMobileMoney ? JSON.stringify({ gasRewardWalletId: targetRewardId, rewardConsumerId: rewardConsumerId }) : null,
           saleItems: {
             create: items.map((item: any) => ({
               productId: item.productId,
@@ -350,7 +355,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
       });
 
       // 4. CREDIT GAS REWARDS
-      if (shouldCalculateReward) {
+      if (shouldCalculateReward && !isMobileMoney) {
         console.log('Calculating gas rewards...');
 
         // Calculate Profit from items using product costPrice (wholesaler price)
@@ -1260,20 +1265,44 @@ export const repayLoan = async (req: AuthRequest, res: Response) => {
     // ==========================================
     // PALMKASH INTEGRATION
     // ==========================================
-    let externalRef = null;
-    if (payment_method === 'mobile_money' || payment_method === 'momo' || payment_method === 'airtel' || payment_method === 'airtel' || payment_method === 'airtel') {
+    const isMobileMoney = payment_method === 'mobile_money' || payment_method === 'momo' || payment_method === 'airtel';
+    if (isMobileMoney) {
+      const creditWallet = await prisma.wallet.findFirst({
+        where: { consumerId: consumerProfile.id, type: 'credit_wallet' }
+      });
+      if (!creditWallet) {
+        return res.status(400).json({ error: 'Credit wallet not found' });
+      }
+
+      const transactionRef = `CREPAY-${Date.now()}`;
       const palmKash = (await import('../services/palmKash.service')).default;
       const pmResult = await palmKash.initiatePayment({
         amount: parseFloat(amount),
         phoneNumber: (consumerProfile as any).user?.phone || req.body.phone || '',
-        referenceId: `CREPAY-${Date.now()}`,
+        referenceId: transactionRef,
         description: `Loan Repayment for Loan #${id}`
       });
 
       if (!pmResult.success) {
         return res.status(400).json({ success: false, error: pmResult.error });
       }
-      externalRef = pmResult.transactionId;
+
+      await prisma.walletTransaction.create({
+        data: {
+          walletId: creditWallet.id,
+          type: 'loan_repayment_replenish',
+          amount: parseFloat(amount),
+          description: `Loan Repayment via Mobile Money`,
+          status: 'pending',
+          reference: `CREPAY-${id}-${transactionRef}`
+        }
+      });
+
+      return res.json({
+        success: true,
+        message: 'Payment initiated. Please approve the prompt on your phone.',
+        status: 'pending'
+      });
     }
 
     // Move validation OUTSIDE transaction to avoid multiple response headers being sent
@@ -1390,8 +1419,12 @@ export const repayLoan = async (req: AuthRequest, res: Response) => {
       // 5. Check if fully paid (Including Interest)
       const repayments = await prisma.walletTransaction.findMany({
         where: {
-          reference: loan.id.toString(),
-          type: 'loan_repayment_replenish'
+          type: 'loan_repayment_replenish',
+          status: 'completed',
+          OR: [
+            { reference: loan.id.toString() },
+            { reference: { startsWith: `CREPAY-${loan.id}-` } }
+          ]
         }
       });
 
@@ -1442,7 +1475,14 @@ export const getActiveLoanLedger = async (req: AuthRequest, res: Response) => {
 
     // Calculate details
     const repayments = await prisma.walletTransaction.findMany({
-      where: { reference: loan.id.toString(), type: 'loan_repayment_replenish' }
+      where: {
+        type: 'loan_repayment_replenish',
+        status: 'completed',
+        OR: [
+          { reference: loan.id.toString() },
+          { reference: { startsWith: `CREPAY-${loan.id}-` } }
+        ]
+      }
     });
 
     const paidAmount = repayments.reduce((sum, t) => sum + t.amount, 0);

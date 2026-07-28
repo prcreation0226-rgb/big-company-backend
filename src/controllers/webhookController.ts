@@ -261,13 +261,219 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
     else if (activeReference.startsWith('ORD-') || activeReference.startsWith('POS-')) {
        // Retail Order or POS Sale
        const sale = await prisma.sale.findFirst({
-           where: { meterId: transaction_id || activeReference } 
+           where: { meterId: transaction_id || activeReference },
+           include: { saleItems: { include: { product: true } } }
        });
-       if (sale && sale.status === 'pending') {
+       if (sale && (sale.status === 'pending' || sale.status === 'pending_payment')) {
            console.log(`✅ [Webhook] Completing sale for reference: ${activeReference}`);
-           await prisma.sale.update({
-               where: { id: sale.id },
-               data: { status: 'completed' }
+           
+           await prisma.$transaction(async (tx) => {
+               // 1. Update status
+               await tx.sale.update({
+                   where: { id: sale.id },
+                   data: { status: 'completed' }
+               });
+
+               // 2. Decrement Stock
+               for (const item of sale.saleItems) {
+                   await tx.product.update({
+                       where: { id: item.productId },
+                       data: { stock: { decrement: item.quantity } }
+                   });
+               }
+
+               // 3. Process Gas Reward
+               if (sale.notes) {
+                   try {
+                       const meta = JSON.parse(sale.notes);
+                       const { gasRewardWalletId, rewardConsumerId, consumerId } = meta;
+                       const targetRewardId = gasRewardWalletId;
+                       const targetConsumerId = rewardConsumerId || consumerId;
+
+                       if (targetRewardId && targetConsumerId) {
+                           // Calculate Profit
+                           let totalProfit = 0;
+                           for (const item of sale.saleItems) {
+                               if (item.product && item.product.costPrice != null) {
+                                   let sellingPrice = Number(item.price);
+                                   if (item.product.taxType === 'B') {
+                                       sellingPrice = sellingPrice / 1.18;
+                                   }
+                                   const profitPerItem = sellingPrice - Number(item.product.costPrice);
+                                   if (profitPerItem > 0) {
+                                       totalProfit += profitPerItem * Number(item.quantity);
+                                   }
+                               }
+                           }
+
+                           if (totalProfit > 0) {
+                               const config = await tx.systemConfig.findFirst();
+                               const gasPrice = config?.gasPricePerM3 || 6500;
+                               const gasRewardShare = config?.gasRewardShare !== undefined ? config.gasRewardShare / 100 : 0.12;
+                               const rewardAmountRWF = totalProfit * gasRewardShare;
+                               const rewardUnits = Number((rewardAmountRWF / gasPrice).toFixed(4));
+
+                               if (rewardUnits > 0) {
+                                   await tx.gasReward.create({
+                                       data: {
+                                           consumerId: targetConsumerId,
+                                           saleId: sale.id,
+                                           meterId: targetRewardId,
+                                           units: rewardUnits,
+                                           profitAmount: totalProfit,
+                                           source: activeReference.startsWith('POS-') ? 'pos_reward' : 'purchase_reward',
+                                           reference: `Reward for Sale #${sale.id}`
+                                       }
+                                   });
+                               }
+                           }
+                       }
+                   } catch (parseErr) {
+                       console.error('Failed to process gas reward metadata in webhook:', parseErr);
+                   }
+               }
+           });
+
+           // 4. Low stock alerts (Post-transaction event)
+           try {
+               for (const item of sale.saleItems) {
+                   const updatedProduct = await prisma.product.findUnique({
+                       where: { id: item.productId },
+                       include: { retailerProfile: { include: { user: true } } }
+                   });
+                   if (updatedProduct) {
+                       const threshold = updatedProduct.lowStockThreshold || 10;
+                       if (updatedProduct.stock <= 0 && updatedProduct.retailerProfile?.user?.email) {
+                           await emailQueue.add('out-of-stock-alert', {
+                               to: updatedProduct.retailerProfile.user.email,
+                               templateType: 'out-of-stock',
+                               data: {
+                                   product: updatedProduct.name,
+                                   retailer_name: updatedProduct.retailerProfile.shopName
+                               },
+                               relatedEntity: { type: 'PRODUCT', id: updatedProduct.id.toString() }
+                           });
+                       } else if (updatedProduct.stock <= threshold && updatedProduct.retailerProfile?.user?.email) {
+                           await emailQueue.add('low-stock-alert', {
+                               to: updatedProduct.retailerProfile.user.email,
+                               templateType: 'low-stock',
+                               data: {
+                                   product: updatedProduct.name,
+                                   remaining_quantity: updatedProduct.stock,
+                                   retailer_name: updatedProduct.retailerProfile.shopName
+                               },
+                               relatedEntity: { type: 'PRODUCT', id: updatedProduct.id.toString() }
+                           });
+                       }
+                   }
+               }
+           } catch (alertErr) {
+               console.error('Failed to trigger low stock alerts in webhook:', alertErr);
+           }
+       }
+    }
+    else if (activeReference.startsWith('WHL-')) {
+       const order = await prisma.order.findFirst({
+           where: { notes: transaction_id || activeReference }
+       });
+       if (order && order.status === 'pending_payment') {
+           console.log(`✅ [Webhook] Completing wholesale order for reference: ${activeReference}`);
+           await prisma.order.update({
+               where: { id: order.id },
+               data: { status: 'pending' }
+           });
+       }
+    }
+    else if (activeReference.startsWith('CREPAY-')) {
+       const transaction = await prisma.walletTransaction.findFirst({
+           where: { reference: { contains: transaction_id || activeReference } }
+       });
+       if (transaction && transaction.status === 'pending') {
+           console.log(`✅ [Webhook] Completing customer loan repayment for reference: ${activeReference}`);
+           const parts = transaction.reference.split('-');
+           const loanId = Number(parts[1]);
+
+           await prisma.$transaction(async (tx) => {
+               await tx.walletTransaction.update({
+                   where: { id: transaction.id },
+                   data: { status: 'completed' }
+               });
+
+               const loan = await tx.loan.findUnique({ where: { id: loanId } });
+               if (loan) {
+                   const repayments = await tx.walletTransaction.findMany({
+                     where: {
+                       type: 'loan_repayment_replenish',
+                       status: 'completed',
+                       OR: [
+                         { reference: loanId.toString() },
+                         { reference: { startsWith: `CREPAY-${loanId}-` } }
+                       ]
+                     }
+                   });
+                   const totalPaid = repayments.reduce((sum, t) => sum + t.amount, 0);
+
+                   const config = await tx.systemConfig.findFirst();
+                   const rate = config?.customerLoanInterest ?? 10;
+                   const interestAmount = Math.round(loan.amount * (rate / 100));
+                   const totalRepayable = loan.amount + interestAmount;
+
+                   if (totalPaid >= totalRepayable) {
+                       await tx.loan.update({
+                           where: { id: loanId },
+                           data: { status: 'repaid' }
+                       });
+                   }
+               }
+           });
+       }
+    }
+    else if (activeReference.startsWith('GCREPAY-')) {
+       const transaction = await prisma.walletTransaction.findFirst({
+           where: { reference: { contains: transaction_id || activeReference } }
+       });
+       if (transaction && transaction.status === 'pending') {
+           console.log(`✅ [Webhook] Completing retailer credit repayment for reference: ${activeReference}`);
+           await prisma.$transaction(async (tx) => {
+               await tx.walletTransaction.update({
+                   where: { id: transaction.id },
+                   data: { status: 'completed' }
+               });
+
+               const retailerProfile = await tx.retailerProfile.findUnique({
+                   where: { id: transaction.retailerId },
+                   include: { user: true }
+               });
+               if (retailerProfile) {
+                   const creditInfo = await tx.retailerCredit.findUnique({ where: { retailerId: retailerProfile.id } });
+                   if (creditInfo) {
+                       const newUsedCredit = Math.max(0, creditInfo.usedCredit - transaction.amount);
+                       const newAvailableCredit = Math.min(creditInfo.creditLimit, creditInfo.availableCredit + transaction.amount);
+                       await tx.retailerCredit.update({
+                           where: { retailerId: retailerProfile.id },
+                           data: {
+                               usedCredit: newUsedCredit,
+                               availableCredit: newAvailableCredit
+                           }
+                       });
+                   }
+
+                   if (retailerProfile.user?.email) {
+                       const updatedCreditInfo = await tx.retailerCredit.findUnique({ where: { retailerId: retailerProfile.id } });
+                       await emailQueue.add('credit-payment-confirmation', {
+                           to: retailerProfile.user.email,
+                           templateType: 'credit-payment-confirmation',
+                           data: {
+                               retail_name: retailerProfile.shopName,
+                               paid_amount: transaction.amount.toLocaleString(),
+                               remaining_balance: (updatedCreditInfo?.usedCredit || 0).toLocaleString(),
+                               payment_date: new Date().toLocaleDateString(),
+                               transaction_id: transaction.reference
+                           },
+                           relatedEntity: { type: 'TRANSACTION', id: transaction.id.toString() }
+                       });
+                   }
+               }
            });
        }
     }

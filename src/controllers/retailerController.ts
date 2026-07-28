@@ -1076,6 +1076,9 @@ export const createSale = async (req: AuthRequest, res: Response) => {
       }
 
 
+      const { gasRewardWalletId, gas_meter_id } = req.body;
+      const targetRewardId = gasRewardWalletId || gas_meter_id;
+
       // --- Handle PalmKash (Mobile Money) ---
       let externalRef = null;
       if (payment_method === 'mobile_money' || payment_method === 'momo' || payment_method === 'airtel' || payment_method === 'airtel' || payment_method === 'airtel') {
@@ -1102,14 +1105,16 @@ export const createSale = async (req: AuthRequest, res: Response) => {
       }
 
       // Create Sale Record
+      const isMobileMoney = payment_method === 'mobile_money' || payment_method === 'momo' || payment_method === 'airtel';
       const sale = await prisma.sale.create({
         data: {
           retailerId: retailerProfile.id,
           consumerId: consumerId,
           totalAmount: total,
           paymentMethod: payment_method,
-          status: 'completed', // In Sandbox we assume success for now to keep flow identical
+          status: isMobileMoney ? 'pending_payment' : 'completed',
           meterId: externalRef || (payment_method === 'nfc' ? payment_details?.uid : null), // Store Ref or Card UID
+          notes: isMobileMoney ? JSON.stringify({ gasRewardWalletId: targetRewardId, consumerId: consumerId }) : null,
           saleItems: {
             create: items.map((item: any) => ({
               productId: Number(item.product_id),
@@ -1121,11 +1126,13 @@ export const createSale = async (req: AuthRequest, res: Response) => {
       });
 
       // Update Stock
-      for (const item of items) {
-        await prisma.product.update({
-          where: { id: Number(item.product_id) },
-          data: { stock: { decrement: item.quantity } }
-        });
+      if (!isMobileMoney) {
+        for (const item of items) {
+          await prisma.product.update({
+            where: { id: Number(item.product_id) },
+            data: { stock: { decrement: item.quantity } }
+          });
+        }
       }
 
       // Log Transaction if linked to consumer
@@ -1152,13 +1159,10 @@ export const createSale = async (req: AuthRequest, res: Response) => {
       // ==========================================
       // GAS REWARD LOGIC (POS)
       // ==========================================
-      const { gasRewardWalletId, gas_meter_id } = req.body; // Accept both for backward compatibility
-      const targetRewardId = gasRewardWalletId || gas_meter_id;
-
       const isRewardEligible = ['dashboard_wallet', 'mobile_money', 'wallet'].includes(payment_method);
 
 
-      if (isRewardEligible && targetRewardId && consumerId) {
+      if (isRewardEligible && targetRewardId && consumerId && !isMobileMoney) {
         // Calculate Profit
         let totalProfit = 0;
 
@@ -1714,6 +1718,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
     // Transaction: Create Order, Debit Wallet/Credit, and Link Retailer
     const result = await prisma.$transaction(async (prisma) => {
       // 1. Payment Processing Logic
+      let externalRef = null;
       if (paymentMethod === 'wallet') {
         if (retailerProfile.walletBalance < totalAmount) {
           throw new Error('Insufficient wallet balance');
@@ -1750,19 +1755,19 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
         // ==========================================
         // PALMKASH INTEGRATION
         // ==========================================
+        const transactionRef = `WHL-${Date.now()}`;
         const palmKash = (await import('../services/palmKash.service')).default;
         const pmResult = await palmKash.initiatePayment({
           amount: totalAmount,
           phoneNumber: (retailerProfile as any).user?.phone || req.body.phone || '',
-          referenceId: `WHL-${Date.now()}`,
+          referenceId: transactionRef,
           description: `Wholesale Order Payment`
         });
 
         if (!pmResult.success) {
           throw new Error(pmResult.error || 'PalmKash payment initiation failed');
         }
-        // Store reference in external location? Order doesn't have ref field.
-        // We can use a comment or just log it. In this app, many things use ID.
+        externalRef = transactionRef;
       } else {
         throw new Error('Invalid payment method');
       }
@@ -1775,6 +1780,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
           totalAmount: totalAmount,
           paymentMethod: paymentMethod,
           status: paymentMethod === 'momo' ? 'pending_payment' : 'pending',
+          notes: externalRef,
           orderItems: {
             create: items.map((item: any) => ({
               productId: item.product_id,
@@ -2304,20 +2310,38 @@ export const payCredit = async (req: AuthRequest, res: Response) => {
     }
 
     // 1. PalmKash Integration for MoMo
-    let externalRef = null;
-    if (paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel' || paymentMethod === 'airtel' || paymentMethod === 'airtel') {
+    const isMobileMoney = paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel';
+    if (isMobileMoney) {
+      const transactionRef = `GCREPAY-${Date.now()}`;
       const palmKash = (await import('../services/palmKash.service')).default;
       const pmResult = await palmKash.initiatePayment({
         amount: parseFloat(amount),
         phoneNumber: phone || (retailerProfile as any).user?.phone || '',
-        referenceId: `GCREPAY-${Date.now()}`,
+        referenceId: transactionRef,
         description: `General Credit Repayment`
       });
 
       if (!pmResult.success) {
         return res.status(400).json({ success: false, error: pmResult.error });
       }
-      externalRef = pmResult.transactionId;
+
+      await prisma.walletTransaction.create({
+        data: {
+          retailerId: retailerProfile.id,
+          type: 'credit_repayment',
+          amount: parseFloat(amount),
+          description: `Credit Repayment via Mobile Money`,
+          reference: transactionRef,
+          status: 'pending'
+        }
+      });
+
+      return res.json({
+        success: true,
+        message: 'Payment initiated. Please approve the prompt on your phone.',
+        transactionId: transactionRef,
+        status: 'pending'
+      });
     }
 
     // 2. Process Payment
@@ -2352,17 +2376,17 @@ export const payCredit = async (req: AuthRequest, res: Response) => {
         });
       }
 
-      // Create a WalletTransaction record for audit
-      const txRecord = await tx.walletTransaction.create({
-        data: {
-          retailerId: retailerProfile.id,
-          type: 'credit_repayment',
-          amount: amount,
-          description: `Credit Repayment via ${paymentMethod}`,
-          reference: externalRef || `REPAY-${Date.now()}`,
-          status: 'completed'
-        }
-      });
+       // Create a WalletTransaction record for audit
+       const txRecord = await tx.walletTransaction.create({
+         data: {
+           retailerId: retailerProfile.id,
+           type: 'credit_repayment',
+           amount: amount,
+           description: `Credit Repayment via ${paymentMethod}`,
+           reference: `REPAY-${Date.now()}`,
+           status: 'completed'
+         }
+       });
 
       // Notify Retailer (RET-EMAIL-010)
       if (retailerProfile.user?.email) {
