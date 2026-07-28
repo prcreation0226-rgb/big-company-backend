@@ -635,6 +635,7 @@ export const getGasUsage = async (req: AuthRequest, res: Response) => {
                 units: t.units,
                 currency: t.currency,
                 status: t.status,
+                token_value: t.orderId,
                 created_at: t.createdAt
             }))
         });

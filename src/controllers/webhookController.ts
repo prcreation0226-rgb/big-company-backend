@@ -90,16 +90,25 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
               });
             }
         } else if (transaction.walletId) {
-            await prisma.$transaction([
-              prisma.walletTransaction.update({
-                where: { id: transaction.id },
-                data: { status: 'completed' }
-              }),
-              prisma.wallet.update({
-                where: { id: transaction.walletId },
-                data: { balance: { increment: transaction.amount } }
-              })
-            ]);
+            const wallet = await prisma.wallet.findUnique({
+                where: { id: transaction.walletId }
+            });
+            if (wallet) {
+                await prisma.$transaction([
+                  prisma.walletTransaction.update({
+                    where: { id: transaction.id },
+                    data: { status: 'completed' }
+                  }),
+                  prisma.wallet.update({
+                    where: { id: transaction.walletId },
+                    data: { balance: { increment: transaction.amount } }
+                  }),
+                  prisma.consumerProfile.update({
+                    where: { id: wallet.consumerId },
+                    data: { walletBalance: { increment: transaction.amount } }
+                  })
+                ]);
+            }
 
             // Notify Consumer of successful wallet top-up via webhook payment gateway (CUS-EMAIL-003)
             try {
@@ -255,23 +264,127 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
         
         if (order && order.status === 'pending') {
             console.log(`✅ [Webhook] Completing gas topup for reference: ${activeReference}`);
-            await prisma.$transaction(async (tx) => {
-                await tx.customerOrder.update({
-                    where: { id: order.id },
-                    data: { status: 'completed' }
-                });
-                
-                const topup = await tx.gasTopup.findFirst({
-                    where: { orderId: order.id.toString() }
-                });
-                
-                if (topup) {
-                    await tx.gasTopup.update({
-                        where: { id: topup.id },
+            
+            const initialTopup = await prisma.gasTopup.findFirst({
+                where: { orderId: order.id.toString() },
+                include: { gasMeter: true, consumerProfile: { include: { user: true } } }
+            });
+
+            if (initialTopup && initialTopup.gasMeter) {
+                const meter = initialTopup.gasMeter;
+                const consumerProfile = initialTopup.consumerProfile;
+                const isGprsMeter = meter.meterType === 'PIPING' || meter.isGprs;
+                let token = '';
+
+                try {
+                    if (isGprsMeter) {
+                        await prisma.gasTopup.update({
+                            where: { id: initialTopup.id },
+                            data: { status: 'Sent to Meter' }
+                        });
+
+                        const LorawanService = require('../services/gasLorawanService');
+                        const loraResult = await LorawanService.rechargeMeter(meter.meterNumber, initialTopup.amount);
+                        if (loraResult.success) {
+                            token = `GPRS-${loraResult.orderId}`;
+                            
+                            let statusText = 'Sent to Meter';
+                            try {
+                                await new Promise(resolve => setTimeout(resolve, 3000));
+                                const statusResult = await LorawanService.getRechargeStatus(loraResult.orderId);
+                                if (statusResult.success && statusResult.status === 2) {
+                                    statusText = 'Recharge successful';
+                                }
+                            } catch (e) {
+                                console.error('[Webhook] Polling acknowledgment error:', e);
+                            }
+
+                            await prisma.gasTopup.update({
+                                where: { id: initialTopup.id },
+                                data: { status: statusText, orderId: token }
+                            });
+                        } else {
+                            console.error(`[Webhook] GPRS Meter Recharge failed: ${loraResult.error}`);
+                            await prisma.gasTopup.update({
+                                where: { id: initialTopup.id },
+                                data: { status: 'Failed' }
+                            });
+                        }
+                    } else {
+                        const { default: tokenMeterService } = await import('../services/tokenMeter.service');
+                        const tokenResult = await tokenMeterService.rechargeTokenMeter({
+                            meterNumber: meter.meterNumber,
+                            amount: initialTopup.amount,
+                            customerRef: order.id.toString()
+                        });
+
+                        if (tokenResult.success) {
+                            token = tokenResult.token;
+                            await prisma.gasTopup.update({
+                                where: { id: initialTopup.id },
+                                data: { status: 'Sent to Meter', orderId: token }
+                            });
+                        } else {
+                            console.error(`[Webhook] STS API recharge failed: ${tokenResult.error}`);
+                            await prisma.gasTopup.update({
+                                where: { id: initialTopup.id },
+                                data: { status: 'Failed' }
+                            });
+                        }
+                    }
+
+                    await prisma.customerOrder.update({
+                        where: { id: order.id },
                         data: { status: 'completed' }
                     });
+
+                    if (token) {
+                        try {
+                            const { emailQueue } = await import('../queues/email.queue');
+                            await emailQueue.add('gas-recharge-success', {
+                                to: consumerProfile.user.phone,
+                                templateType: 'gas-recharge-success',
+                                data: {
+                                    customer_name: consumerProfile.fullName || consumerProfile.user.name || 'Valued Customer',
+                                    meter_name: meter.aliasName || 'Meter',
+                                    meter_id: meter.meterNumber,
+                                    amount: initialTopup.amount.toLocaleString(),
+                                    token: token,
+                                    transaction_id: order.id.toString(),
+                                    volume: initialTopup.units
+                                },
+                                relatedEntity: { type: 'GAS_ORDER', id: order.id.toString() }
+                            });
+                            
+                            if (consumerProfile.user.email) {
+                                await emailQueue.add('customer-gas-recharge-email', {
+                                    to: consumerProfile.user.email,
+                                    templateType: 'customer-gas-recharge-email',
+                                    data: {
+                                        customer_name: consumerProfile.fullName || consumerProfile.user.name || 'Valued Customer',
+                                        meter_name: meter.aliasName || 'Meter',
+                                        meter_id: meter.meterNumber,
+                                        amount: initialTopup.amount.toLocaleString(),
+                                        token: token,
+                                        transaction_id: order.id.toString(),
+                                        volume: initialTopup.units
+                                    },
+                                    relatedEntity: { type: 'GAS_ORDER', id: order.id.toString() }
+                                });
+                            }
+                        } catch (notifyErr) {
+                            console.error('[Webhook] Gas recharge notification trigger failed:', notifyErr);
+                        }
+                    }
+
+                } catch (rechargeErr: any) {
+                    console.error('[Webhook] Gas recharge api exception:', rechargeErr);
+                    await prisma.gasTopup.update({
+                        where: { id: initialTopup.id },
+                        data: { status: 'Failed' }
+                    });
                 }
-            });
+            }
         }
     }
     else if (activeReference.startsWith('ORD-') || activeReference.startsWith('POS-')) {
