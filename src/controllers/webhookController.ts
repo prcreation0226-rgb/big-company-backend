@@ -35,8 +35,9 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
     // 1. Identify what this is (TOPUP, GAS, ORD, POS)
     if (activeReference.startsWith('TOPUP-') || activeReference.startsWith('RTOP-') || activeReference.startsWith('TEST-')) {
       // Wallet Topup
+      // Find by exact reference (what we sent to PalmKash as referenceId)
       const transaction = await prisma.walletTransaction.findFirst({
-        where: { reference: { contains: transaction_id || activeReference } }
+        where: { reference: activeReference, status: 'pending' }
       });
 
       if (transaction && transaction.status === 'pending') {
@@ -260,8 +261,9 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
     }
     else if (activeReference.startsWith('ORD-') || activeReference.startsWith('POS-')) {
        // Retail Order or POS Sale
+       // meterId now stores our own ORD-/POS- reference (reliable), not PalmKash's transactionId
        const sale = await prisma.sale.findFirst({
-           where: { meterId: transaction_id || activeReference },
+           where: { meterId: activeReference },
            include: { saleItems: { include: { product: true } } }
        });
        if (sale && (sale.status === 'pending' || sale.status === 'pending_payment')) {
@@ -385,8 +387,10 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
        }
     }
     else if (activeReference.startsWith('CREPAY-')) {
+       // CREPAY reference in DB is stored as 'CREPAY-{loanId}-{activeReference}'
+       // so we use 'contains' to match, but only on our own reference (not PalmKash's transaction_id)
        const transaction = await prisma.walletTransaction.findFirst({
-           where: { reference: { contains: transaction_id || activeReference } }
+           where: { reference: { contains: activeReference }, status: 'pending' }
        });
        if (transaction && transaction.status === 'pending') {
            console.log(`✅ [Webhook] Completing customer loan repayment for reference: ${activeReference}`);
@@ -429,8 +433,9 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
        }
     }
     else if (activeReference.startsWith('GCREPAY-')) {
+       // Find by exact reference saved when payment was initiated
        const transaction = await prisma.walletTransaction.findFirst({
-           where: { reference: { contains: transaction_id || activeReference } }
+           where: { reference: activeReference, status: 'pending' }
        });
        if (transaction && transaction.status === 'pending') {
            console.log(`✅ [Webhook] Completing retailer credit repayment for reference: ${activeReference}`);

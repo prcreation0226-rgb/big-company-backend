@@ -47,10 +47,12 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
       const palmKash = (await import('../services/palmKash.service')).default;
       log('PalmKash service imported');
 
+      // Store our own reference in ordRef so meterId = ordRef (reliable for webhook lookup)
+      const ordRef = `ORD-${Date.now()}`;
       const pmResult = await palmKash.initiatePayment({
         amount: total,
         phoneNumber: phone || (consumerProfile as any).user?.phone || '',
-        referenceId: `ORD-${Date.now()}`,
+        referenceId: ordRef,
         description: `Retail Order Payment`
       });
       log(`PalmKash result: ${JSON.stringify(pmResult)}`);
@@ -59,7 +61,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
         log('PalmKash failed, returning 400');
         return res.status(400).json({ success: false, error: pmResult.error });
       }
-      externalRef = pmResult.transactionId;
+      externalRef = ordRef; // Store OUR reference (not PalmKash's ID) so webhook can find it via meterId
     }
 
     log('Checking for retailerId...');

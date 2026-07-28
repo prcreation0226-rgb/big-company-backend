@@ -1085,17 +1085,19 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         if (!customer_phone) throw new Error('Customer phone required for mobile money payment');
 
         const palmKash = (await import('../services/palmKash.service')).default;
+        // Use posRef as our own reference stored in meterId — reliable for webhook lookup
+        const posRef = `POS-${Date.now()}`;
         const pmResult = await palmKash.initiatePayment({
           amount: total,
           phoneNumber: customer_phone as string,
-          referenceId: `POS-${Date.now()}`,
+          referenceId: posRef,
           description: `POS Sale at ${retailerProfile.shopName}`
         });
 
         if (!pmResult.success) {
           throw new Error(pmResult.error || 'PalmKash payment initiation failed');
         }
-        externalRef = pmResult.transactionId;
+        externalRef = posRef; // Store OUR reference (not PalmKash's ID) so webhook finds it via meterId
 
         // Try to identify consumer for rewards
         const consumer = await prisma.consumerProfile.findFirst({
