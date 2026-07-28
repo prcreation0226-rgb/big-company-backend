@@ -375,10 +375,11 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
        }
     }
     else if (activeReference.startsWith('WHL-')) {
+       // notes stores our own WHL-xxx reference set at order creation (reliable exact match)
        const order = await prisma.order.findFirst({
-           where: { notes: transaction_id || activeReference }
+           where: { notes: activeReference, status: 'pending_payment' }
        });
-       if (order && order.status === 'pending_payment') {
+       if (order) {
            console.log(`✅ [Webhook] Completing wholesale order for reference: ${activeReference}`);
            await prisma.order.update({
                where: { id: order.id },
