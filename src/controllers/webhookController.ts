@@ -25,7 +25,7 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
 
     // Official PalmKash status is usually 'SUCCESS' or 'FAILED' or 'PENDING'
     const normalizedStatus = String(status || '').toLowerCase();
-    const isSuccess = normalizedStatus === 'success' || normalizedStatus === 'completed';
+    const isSuccess = ['success', 'completed', 'approved', 'successful'].includes(normalizedStatus);
 
     if (!isSuccess) {
        console.log(`ℹ️ [Webhook] Transaction ${activeReference} is not successful (Status: ${status}).`);
@@ -95,7 +95,7 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                 data: {
                   retail_name: retailer.shopName,
                   amount: transaction.amount.toLocaleString(),
-                  new_balance: (retailer.walletBalance + transaction.amount).toLocaleString(),
+                  new_balance: retailer.walletBalance.toLocaleString(),
                   transaction_id: activeReference,
                   topup_date: new Date().toLocaleDateString()
                 },
@@ -141,7 +141,7 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                     data: {
                       customer_name: wallet.consumerProfile.fullName || wallet.consumerProfile.user.name || 'Customer',
                       amount: transaction.amount.toLocaleString(),
-                      new_balance: (wallet.balance + transaction.amount).toLocaleString(),
+                      new_balance: wallet.balance.toLocaleString(),
                       transaction_id: activeReference
                     },
                     relatedEntity: { type: 'WALLET_TRANSACTION', id: transaction.id.toString() }
@@ -156,7 +156,7 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                     data: {
                       customer_name: wallet.consumerProfile.fullName || wallet.consumerProfile.user.name || 'Customer',
                       amount: transaction.amount.toLocaleString(),
-                      new_balance: (wallet.balance + transaction.amount).toLocaleString(),
+                      new_balance: wallet.balance.toLocaleString(),
                       transaction_id: activeReference
                     },
                     relatedEntity: { type: 'WALLET_TRANSACTION', id: transaction.id.toString() }

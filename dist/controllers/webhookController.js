@@ -49,7 +49,7 @@ exports.handleIntouchSMSWebhook = exports.handlePalmKashWebhook = void 0;
 const prisma_1 = __importDefault(require("../utils/prisma"));
 const email_queue_1 = require("../queues/email.queue");
 const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
     try {
         // DEBUG LOG Payload
         console.log('--- [PalmKash Webhook Received] ---');
@@ -66,7 +66,7 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
         }
         // Official PalmKash status is usually 'SUCCESS' or 'FAILED' or 'PENDING'
         const normalizedStatus = String(status || '').toLowerCase();
-        const isSuccess = normalizedStatus === 'success' || normalizedStatus === 'completed';
+        const isSuccess = ['success', 'completed', 'approved', 'successful'].includes(normalizedStatus);
         if (!isSuccess) {
             console.log(`ℹ️ [Webhook] Transaction ${activeReference} is not successful (Status: ${status}).`);
             if (activeReference && (activeReference.startsWith('ORD-') || activeReference.startsWith('POS-'))) {
@@ -133,7 +133,7 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                             data: {
                                 retail_name: retailer.shopName,
                                 amount: transaction.amount.toLocaleString(),
-                                new_balance: (retailer.walletBalance + transaction.amount).toLocaleString(),
+                                new_balance: retailer.walletBalance.toLocaleString(),
                                 transaction_id: activeReference,
                                 topup_date: new Date().toLocaleDateString()
                             },
@@ -161,25 +161,42 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                             })
                         ]);
                     }
-                    // Notify Consumer of successful wallet top-up via webhook payment gateway (CUS-EMAIL-003)
+                    // Notify Consumer of successful wallet top-up via webhook payment gateway (CUS-EMAIL-003 & CUS-SMS-003)
                     try {
                         const wallet = yield prisma_1.default.wallet.findUnique({
                             where: { id: transaction.walletId },
                             include: { consumerProfile: { include: { user: true } } }
                         });
-                        if ((_c = (_b = wallet === null || wallet === void 0 ? void 0 : wallet.consumerProfile) === null || _b === void 0 ? void 0 : _b.user) === null || _c === void 0 ? void 0 : _c.email) {
+                        if ((_b = wallet === null || wallet === void 0 ? void 0 : wallet.consumerProfile) === null || _b === void 0 ? void 0 : _b.user) {
                             const { emailQueue } = yield Promise.resolve().then(() => __importStar(require('../queues/email.queue')));
-                            yield emailQueue.add('customer-wallet-topup-email', {
-                                to: wallet.consumerProfile.user.email,
-                                templateType: 'customer-wallet-topup-email', // Mapped to CUS-EMAIL-003
-                                data: {
-                                    customer_name: wallet.consumerProfile.fullName || wallet.consumerProfile.user.name || 'Customer',
-                                    amount: transaction.amount.toLocaleString(),
-                                    new_balance: (wallet.balance + transaction.amount).toLocaleString(),
-                                    transaction_id: activeReference
-                                },
-                                relatedEntity: { type: 'WALLET_TRANSACTION', id: transaction.id.toString() }
-                            });
+                            // 1. Send SMS (customer-wallet-topup -> CUS-SMS-003)
+                            if (wallet.consumerProfile.user.phone) {
+                                yield emailQueue.add('customer-wallet-topup-sms', {
+                                    to: wallet.consumerProfile.user.phone,
+                                    templateType: 'customer-wallet-topup',
+                                    data: {
+                                        customer_name: wallet.consumerProfile.fullName || wallet.consumerProfile.user.name || 'Customer',
+                                        amount: transaction.amount.toLocaleString(),
+                                        new_balance: wallet.balance.toLocaleString(),
+                                        transaction_id: activeReference
+                                    },
+                                    relatedEntity: { type: 'WALLET_TRANSACTION', id: transaction.id.toString() }
+                                });
+                            }
+                            // 2. Send Email (customer-wallet-topup-email -> CUS-EMAIL-003)
+                            if (wallet.consumerProfile.user.email) {
+                                yield emailQueue.add('customer-wallet-topup-email', {
+                                    to: wallet.consumerProfile.user.email,
+                                    templateType: 'customer-wallet-topup-email',
+                                    data: {
+                                        customer_name: wallet.consumerProfile.fullName || wallet.consumerProfile.user.name || 'Customer',
+                                        amount: transaction.amount.toLocaleString(),
+                                        new_balance: wallet.balance.toLocaleString(),
+                                        transaction_id: activeReference
+                                    },
+                                    relatedEntity: { type: 'WALLET_TRANSACTION', id: transaction.id.toString() }
+                                });
+                            }
                         }
                     }
                     catch (err) {
@@ -521,6 +538,58 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                         }
                     }
                 }));
+                // Trigger Gas Reward Notifications (CUS-SMS-006 & CUS-EMAIL-006)
+                try {
+                    if (sale.notes) {
+                        const meta = JSON.parse(sale.notes);
+                        const targetConsumerId = meta.rewardConsumerId || meta.consumerId;
+                        if (targetConsumerId) {
+                            const consumer = yield prisma_1.default.consumerProfile.findUnique({
+                                where: { id: targetConsumerId },
+                                include: { user: true, gasRewards: true }
+                            });
+                            if (consumer) {
+                                const latestReward = yield prisma_1.default.gasReward.findFirst({
+                                    where: { consumerId: consumer.id, saleId: sale.id },
+                                    orderBy: { id: 'desc' }
+                                });
+                                if (latestReward && latestReward.units > 0) {
+                                    const totalUnits = consumer.gasRewards.reduce((sum, r) => sum + r.units, 0);
+                                    const { emailQueue } = yield Promise.resolve().then(() => __importStar(require('../queues/email.queue')));
+                                    // 1. Send SMS (gas-reward-update -> CUS-SMS-006)
+                                    if ((_c = consumer.user) === null || _c === void 0 ? void 0 : _c.phone) {
+                                        yield emailQueue.add('gas-reward-update', {
+                                            to: consumer.user.phone,
+                                            templateType: 'gas-reward-update',
+                                            data: {
+                                                customer_name: consumer.fullName || consumer.user.name || 'Customer',
+                                                reward_amount: latestReward.units.toString(),
+                                                new_reward_balance: totalUnits.toFixed(4)
+                                            },
+                                            relatedEntity: { type: 'GAS_REWARD', id: latestReward.id.toString() }
+                                        });
+                                    }
+                                    // 2. Send Email (customer-reward-update-email -> CUS-EMAIL-006)
+                                    if ((_d = consumer.user) === null || _d === void 0 ? void 0 : _d.email) {
+                                        yield emailQueue.add('customer-reward-update-email', {
+                                            to: consumer.user.email,
+                                            templateType: 'customer-reward-update-email',
+                                            data: {
+                                                customer_name: consumer.fullName || consumer.user.name || 'Customer',
+                                                reward_amount: latestReward.units.toString(),
+                                                new_reward_balance: totalUnits.toFixed(4)
+                                            },
+                                            relatedEntity: { type: 'GAS_REWARD', id: latestReward.id.toString() }
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (notifyErr) {
+                    console.error('Failed to trigger gas reward notification in webhook:', notifyErr);
+                }
                 // 4. Low stock alerts (Post-transaction event)
                 try {
                     for (const item of sale.saleItems) {
@@ -530,7 +599,7 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                         });
                         if (updatedProduct) {
                             const threshold = updatedProduct.lowStockThreshold || 10;
-                            if (updatedProduct.stock <= 0 && ((_e = (_d = updatedProduct.retailerProfile) === null || _d === void 0 ? void 0 : _d.user) === null || _e === void 0 ? void 0 : _e.email)) {
+                            if (updatedProduct.stock <= 0 && ((_f = (_e = updatedProduct.retailerProfile) === null || _e === void 0 ? void 0 : _e.user) === null || _f === void 0 ? void 0 : _f.email)) {
                                 yield email_queue_1.emailQueue.add('out-of-stock-alert', {
                                     to: updatedProduct.retailerProfile.user.email,
                                     templateType: 'out-of-stock',
@@ -541,7 +610,7 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                                     relatedEntity: { type: 'PRODUCT', id: updatedProduct.id.toString() }
                                 });
                             }
-                            else if (updatedProduct.stock <= threshold && ((_g = (_f = updatedProduct.retailerProfile) === null || _f === void 0 ? void 0 : _f.user) === null || _g === void 0 ? void 0 : _g.email)) {
+                            else if (updatedProduct.stock <= threshold && ((_h = (_g = updatedProduct.retailerProfile) === null || _g === void 0 ? void 0 : _g.user) === null || _h === void 0 ? void 0 : _h.email)) {
                                 yield email_queue_1.emailQueue.add('low-stock-alert', {
                                     to: updatedProduct.retailerProfile.user.email,
                                     templateType: 'low-stock',
@@ -674,7 +743,7 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                 console.log(`✅ [Webhook] Completing wholesale order for reference: ${activeReference}`);
                 yield prisma_1.default.order.update({
                     where: { id: order.id },
-                    data: { status: 'completed' }
+                    data: { status: 'pending' }
                 });
             }
         }
@@ -722,7 +791,7 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     where: { id: txRecord.retailerId },
                     include: { user: true }
                 });
-                if ((_h = retailer === null || retailer === void 0 ? void 0 : retailer.user) === null || _h === void 0 ? void 0 : _h.email) {
+                if ((_j = retailer === null || retailer === void 0 ? void 0 : retailer.user) === null || _j === void 0 ? void 0 : _j.email) {
                     yield email_queue_1.emailQueue.add('credit-payment-confirmation', {
                         to: retailer.user.email,
                         templateType: 'credit-payment-confirmation',
@@ -776,7 +845,7 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     where: { id: txRecord.retailerId },
                     include: { user: true }
                 });
-                if ((_j = retailer === null || retailer === void 0 ? void 0 : retailer.user) === null || _j === void 0 ? void 0 : _j.email) {
+                if ((_k = retailer === null || retailer === void 0 ? void 0 : retailer.user) === null || _k === void 0 ? void 0 : _k.email) {
                     yield email_queue_1.emailQueue.add('credit-payment-confirmation', {
                         to: retailer.user.email,
                         templateType: 'credit-payment-confirmation',
