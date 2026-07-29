@@ -3,6 +3,7 @@ import { AuthRequest } from '../middleware/authMiddleware';
 import prisma from '../utils/prisma';
 import PipingMeterService from '../services/pipingMeter.service';
 import TokenMeterService from '../services/tokenMeter.service';
+import { gprsMapping } from '../config/gprsMapping';
 
 // Get gas configuration (price, etc)
 export const getGasConfig = async (req: AuthRequest, res: Response) => {
@@ -167,13 +168,19 @@ export const addGasMeter = async (req: AuthRequest, res: Response) => {
             return res.status(400).json({ success: false, error: 'Meter number already registered' });
         }
 
+        const matchedGprs = gprsMapping.find(
+            m => m.meterNo === meter_number || m.meterNo === meter_number.replace(/^MTR-/i, '')
+        );
+
         const meter = await prisma.gasMeter.create({
             data: {
                 consumerId: consumerProfile.id,
                 meterNumber: meter_number,
-                meterKey: meter_key,
-                serialNo: serial_no,
-                meterType: meter_type === 'PIPING' || meter_type === 'GPRS' ? 'PIPING' : 'TOKEN',
+                imei: matchedGprs ? matchedGprs.imei : null,
+                serialNo: matchedGprs ? matchedGprs.serialNo : (serial_no || null),
+                meterKey: matchedGprs ? matchedGprs.meterKey : (meter_key || null),
+                isGprs: matchedGprs ? true : false,
+                meterType: matchedGprs ? 'TOKEN' : (meter_type === 'PIPING' || meter_type === 'GPRS' ? 'PIPING' : 'TOKEN'),
                 aliasName: alias_name || 'My Meter',
                 ownerName: owner_name,
                 ownerPhone: owner_phone,
