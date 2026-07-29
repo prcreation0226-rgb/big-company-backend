@@ -123,26 +123,45 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                 ]);
             }
 
-            // Notify Consumer of successful wallet top-up via webhook payment gateway (CUS-EMAIL-003)
+            // Notify Consumer of successful wallet top-up via webhook payment gateway (CUS-EMAIL-003 & CUS-SMS-003)
             try {
               const wallet = await prisma.wallet.findUnique({
                 where: { id: transaction.walletId },
                 include: { consumerProfile: { include: { user: true } } }
               });
               
-              if (wallet?.consumerProfile?.user?.email) {
+              if (wallet?.consumerProfile?.user) {
                 const { emailQueue } = await import('../queues/email.queue');
-                await emailQueue.add('customer-wallet-topup-email', {
-                  to: wallet.consumerProfile.user.email,
-                  templateType: 'customer-wallet-topup-email', // Mapped to CUS-EMAIL-003
-                  data: {
-                    customer_name: wallet.consumerProfile.fullName || wallet.consumerProfile.user.name || 'Customer',
-                    amount: transaction.amount.toLocaleString(),
-                    new_balance: (wallet.balance + transaction.amount).toLocaleString(),
-                    transaction_id: activeReference
-                  },
-                  relatedEntity: { type: 'WALLET_TRANSACTION', id: transaction.id.toString() }
-                });
+
+                // 1. Send SMS (customer-wallet-topup -> CUS-SMS-003)
+                if (wallet.consumerProfile.user.phone) {
+                  await emailQueue.add('customer-wallet-topup-sms', {
+                    to: wallet.consumerProfile.user.phone,
+                    templateType: 'customer-wallet-topup',
+                    data: {
+                      customer_name: wallet.consumerProfile.fullName || wallet.consumerProfile.user.name || 'Customer',
+                      amount: transaction.amount.toLocaleString(),
+                      new_balance: (wallet.balance + transaction.amount).toLocaleString(),
+                      transaction_id: activeReference
+                    },
+                    relatedEntity: { type: 'WALLET_TRANSACTION', id: transaction.id.toString() }
+                  });
+                }
+
+                // 2. Send Email (customer-wallet-topup-email -> CUS-EMAIL-003)
+                if (wallet.consumerProfile.user.email) {
+                  await emailQueue.add('customer-wallet-topup-email', {
+                    to: wallet.consumerProfile.user.email,
+                    templateType: 'customer-wallet-topup-email',
+                    data: {
+                      customer_name: wallet.consumerProfile.fullName || wallet.consumerProfile.user.name || 'Customer',
+                      amount: transaction.amount.toLocaleString(),
+                      new_balance: (wallet.balance + transaction.amount).toLocaleString(),
+                      transaction_id: activeReference
+                    },
+                    relatedEntity: { type: 'WALLET_TRANSACTION', id: transaction.id.toString() }
+                  });
+                }
               }
             } catch (err) {
               console.error('[Webhook] Consumer topup notification failed:', err);
@@ -501,7 +520,63 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                        console.error('Failed to process gas reward metadata in webhook:', parseErr);
                    }
                }
-           });
+            });
+
+            // Trigger Gas Reward Notifications (CUS-SMS-006 & CUS-EMAIL-006)
+            try {
+                if (sale.notes) {
+                    const meta = JSON.parse(sale.notes);
+                    const targetConsumerId = meta.rewardConsumerId || meta.consumerId;
+                    if (targetConsumerId) {
+                        const consumer = await prisma.consumerProfile.findUnique({
+                            where: { id: targetConsumerId },
+                            include: { user: true, gasRewards: true }
+                        });
+                        
+                        if (consumer) {
+                            const latestReward = await prisma.gasReward.findFirst({
+                                where: { consumerId: consumer.id, saleId: sale.id },
+                                orderBy: { id: 'desc' }
+                            });
+
+                            if (latestReward && latestReward.units > 0) {
+                                const totalUnits = consumer.gasRewards.reduce((sum, r) => sum + r.units, 0);
+                                const { emailQueue } = await import('../queues/email.queue');
+
+                                // 1. Send SMS (gas-reward-update -> CUS-SMS-006)
+                                if (consumer.user?.phone) {
+                                    await emailQueue.add('gas-reward-update', {
+                                        to: consumer.user.phone,
+                                        templateType: 'gas-reward-update',
+                                        data: {
+                                            customer_name: consumer.fullName || consumer.user.name || 'Customer',
+                                            reward_amount: latestReward.units.toString(),
+                                            new_reward_balance: totalUnits.toFixed(4)
+                                        },
+                                        relatedEntity: { type: 'GAS_REWARD', id: latestReward.id.toString() }
+                                    });
+                                }
+
+                                // 2. Send Email (customer-reward-update-email -> CUS-EMAIL-006)
+                                if (consumer.user?.email) {
+                                    await emailQueue.add('customer-reward-update-email', {
+                                        to: consumer.user.email,
+                                        templateType: 'customer-reward-update-email',
+                                        data: {
+                                            customer_name: consumer.fullName || consumer.user.name || 'Customer',
+                                            reward_amount: latestReward.units.toString(),
+                                            new_reward_balance: totalUnits.toFixed(4)
+                                        },
+                                        relatedEntity: { type: 'GAS_REWARD', id: latestReward.id.toString() }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (notifyErr) {
+                console.error('Failed to trigger gas reward notification in webhook:', notifyErr);
+            }
 
            // 4. Low stock alerts (Post-transaction event)
            try {
@@ -656,10 +731,10 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
        });
        if (order && (order.status === 'pending' || order.status === 'pending_payment')) {
            console.log(`✅ [Webhook] Completing wholesale order for reference: ${activeReference}`);
-           await prisma.order.update({
-               where: { id: order.id },
-               data: { status: 'completed' }
-           });
+            await prisma.order.update({
+                where: { id: order.id },
+                data: { status: 'pending' }
+            });
        }
     }
     else if (activeReference.startsWith('RREPAY-')) {
