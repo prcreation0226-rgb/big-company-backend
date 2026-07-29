@@ -252,6 +252,31 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                             ]
                         }
                     });
+                    // Auto-Register meter if it does not exist but exists in GPRS mappings
+                    if (!meter) {
+                        try {
+                            const { gprsMapping } = yield Promise.resolve().then(() => __importStar(require('../config/gprsMapping')));
+                            const matchedMapping = gprsMapping.find(m => m.meterNo === txRecord.meterNumber || m.meterNo === txRecord.meterNumber.replace(/^MTR-/i, ''));
+                            if (matchedMapping && txRecord.customerId) {
+                                console.log(`[Webhook GasRecharge] Auto-registering matched GPRS meter ${txRecord.meterNumber} for consumer ${txRecord.customerId}...`);
+                                meter = yield prisma_1.default.gasMeter.create({
+                                    data: {
+                                        consumerId: txRecord.customerId,
+                                        meterNumber: matchedMapping.meterNo,
+                                        imei: matchedMapping.imei,
+                                        serialNo: matchedMapping.serialNo,
+                                        meterKey: matchedMapping.meterKey,
+                                        isGprs: true,
+                                        meterType: 'TOKEN',
+                                        status: 'active'
+                                    }
+                                });
+                            }
+                        }
+                        catch (lookupErr) {
+                            console.error('[Webhook GasRecharge] Error during meter lookup/registration:', lookupErr.message);
+                        }
+                    }
                     let pushResult = { success: true, error: null };
                     if (apiResult.success && meter && meter.imei && apiResult.token) {
                         const { default: pipingMeterService } = yield Promise.resolve().then(() => __importStar(require('../services/pipingMeter.service')));
