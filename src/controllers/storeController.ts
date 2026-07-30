@@ -768,9 +768,7 @@ export const getMyOrders = async (req: AuthRequest, res: Response) => {
     const sales = await prisma.sale.findMany({
       where: { consumerId: consumerProfile.id },
       include: {
-        saleItems: {
-          include: { product: true }
-        }
+        saleItems: true
       },
       orderBy: { createdAt: 'desc' }
     });
@@ -795,6 +793,13 @@ export const getMyOrders = async (req: AuthRequest, res: Response) => {
       }
     ]));
 
+    // Fetch products separately to prevent Prisma from crashing on deleted products
+    const productIds = Array.from(new Set(sales.flatMap(s => s.saleItems.map(si => si.productId))));
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds } }
+    });
+    const productMap = new Map(products.map(p => [p.id, p]));
+
     // 2. Fetch CustomerOrders (Gas/Other)
     const otherOrders = await prisma.customerOrder.findMany({
       where: { consumerId: consumerProfile.id },
@@ -814,15 +819,18 @@ export const getMyOrders = async (req: AuthRequest, res: Response) => {
           location: retailerProfile?.address || 'Unknown Location',
           phone: retailerProfile?.phone || 'N/A'
         },
-        items: sale.saleItems.map(item => ({
-          id: item.id,
-          product_id: item.productId,
-          product_name: item.product.name,
-          quantity: item.quantity,
-          unit_price: item.price,
-          total: item.price * item.quantity,
-          image: item.product.image // Include product image
-        })),
+        items: sale.saleItems.map(item => {
+          const product = productMap.get(item.productId);
+          return {
+            id: item.id,
+            product_id: item.productId,
+            product_name: product?.name || 'Unknown Product',
+            quantity: item.quantity,
+            unit_price: item.price,
+            total: item.price * item.quantity,
+            image: product?.image // Include product image
+          };
+        }),
         subtotal: sale.totalAmount, // Assuming no extra fees for now
         delivery_fee: 0,
         total: sale.totalAmount,

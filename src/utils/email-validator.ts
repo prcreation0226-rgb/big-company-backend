@@ -31,3 +31,18 @@ export const validateBusinessEmailFormat = (email: string, role: 'retailer' | 'w
   }
   return false;
 };
+
+/**
+ * Strips out "www." from the beginning of an email if present mistakenly.
+ * @param email The email address to sanitize
+ * @returns string
+ */
+export const sanitizeEmail = (email: string | null | undefined): string => {
+  if (!email) return '';
+  let cleaned = email.trim().toLowerCase();
+  if (cleaned.startsWith('www.')) {
+    cleaned = cleaned.substring(4);
+  }
+  return cleaned;
+};
+

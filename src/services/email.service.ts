@@ -109,7 +109,12 @@ export class EmailService {
     relatedEntity?: { type: string; id: string },
     existingLogId?: number
   ) {
-    if (!to) {
+    let cleanedTo = to ? to.trim().toLowerCase() : '';
+    if (cleanedTo.startsWith('www.')) {
+      cleanedTo = cleanedTo.substring(4);
+    }
+
+    if (!cleanedTo) {
       console.error(`❌ [EmailService] Cannot send email: Recipient address is undefined (Subject: ${subject})`);
       return;
     }
@@ -127,7 +132,7 @@ export class EmailService {
     } else {
       log = await prisma.systemEmailLog.create({
         data: {
-          recipientEmail: to,
+          recipientEmail: cleanedTo,
           // @ts-ignore
           subject: subject,
           templateType: templateType,
@@ -144,7 +149,7 @@ export class EmailService {
       const utf8Subject = `=?utf-8?B?${Buffer.from(subject).toString('base64')}?=`;
       const messageParts = [
         `From: ${process.env.GMAIL_SENDER_EMAIL}`,
-        `To: ${to}`,
+        `To: ${cleanedTo}`,
         'Content-Type: text/html; charset=utf-8',
         'MIME-Version: 1.0',
         `Subject: ${utf8Subject}`,
@@ -188,7 +193,7 @@ export class EmailService {
         },
       });
       
-      console.error(`[EmailService] Failed to send email to ${to}:`, error.message);
+      console.error(`[EmailService] Failed to send email to ${cleanedTo}:`, error.message);
       await monitoringService.reportApiFailure('GMAIL_API', error.message);
       throw error;
     }
