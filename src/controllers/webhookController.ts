@@ -325,6 +325,23 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                                 },
                                 relatedEntity: { type: 'USER', id: consumer.userId.toString() }
                             });
+
+                            if (consumer.user.email) {
+                                await emailQueue.add('customer-gas-recharge-email', {
+                                    to: consumer.user.email,
+                                    templateType: 'customer-gas-recharge-email',
+                                    data: {
+                                        customer_name: consumer.fullName || consumer.user.name || 'Valued Customer',
+                                        meter_name: 'Gas Meter',
+                                        meter_id: txRecord.meterNumber,
+                                        amount: txRecord.amount.toLocaleString(),
+                                        token: apiResult.token || 'Remote GPRS Topup',
+                                        transaction_id: txRecord.id.toString(),
+                                        volume: totalVolume
+                                    },
+                                    relatedEntity: { type: 'USER', id: consumer.userId.toString() }
+                                });
+                            }
                         }
                     } catch (notifyErr) {
                         console.error('Failed to trigger gas recharge notification:', notifyErr);
