@@ -885,6 +885,7 @@ model WalletTransaction {
   description String?
   reference   String?
   status      String           @default("completed")
+  paymentPhone String?
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @default(now()) @updatedAt
   wallet      Wallet?          @relation(fields: [walletId], references: [id], onDelete: NoAction, map: "WalletTransaction_walletId_fkey")
@@ -992,6 +993,7 @@ model GasRechargeTransaction {
   errorMessage  String?  @db.Text                // Store error details if failed
   paymentMethod String   @default("wallet")      // wallet, mobile_money, nfc_card
   operatorId    Int?                              // Optional: ID of the POS operator
+  paymentPhone  String?                           // Optional: Phone number used for Mobile Money payment
   createdAt     DateTime @default(now())
   updatedAt     DateTime @default(now()) @updatedAt
 

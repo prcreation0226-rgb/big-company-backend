@@ -134,9 +134,10 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                 const { emailQueue } = await import('../queues/email.queue');
 
                 // 1. Send SMS (customer-wallet-topup -> CUS-SMS-003)
-                if (wallet.consumerProfile.user.phone) {
+                const smsDestination = (transaction as any).paymentPhone || wallet.consumerProfile.user.phone;
+                if (smsDestination) {
                   await emailQueue.add('customer-wallet-topup-sms', {
-                    to: wallet.consumerProfile.user.phone,
+                    to: smsDestination,
                     templateType: 'customer-wallet-topup',
                     data: {
                       customer_name: wallet.consumerProfile.fullName || wallet.consumerProfile.user.name || 'Customer',
@@ -311,20 +312,21 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                         });
                         if (consumer) {
                             const { emailQueue } = await import('../queues/email.queue');
-                            await emailQueue.add('gas-recharge-success', {
-                                to: consumer.user.phone || consumer.user.email || '',
-                                templateType: 'gas-recharge-success',
-                                data: {
-                                    customer_name: consumer.fullName || consumer.user.name || 'Valued Customer',
-                                    meter_name: 'Gas Meter',
-                                    meter_id: txRecord.meterNumber,
-                                    amount: txRecord.amount.toLocaleString(),
-                                    token: apiResult.token || 'Remote GPRS Topup',
-                                    transaction_id: txRecord.id.toString(),
-                                    volume: totalVolume
-                                },
-                                relatedEntity: { type: 'USER', id: consumer.userId.toString() }
-                            });
+                             const smsDestination = (txRecord as any).paymentPhone || consumer.user.phone || consumer.user.email || '';
+                             await emailQueue.add('gas-recharge-success', {
+                                 to: smsDestination,
+                                 templateType: 'gas-recharge-success',
+                                 data: {
+                                     customer_name: consumer.fullName || consumer.user.name || 'Valued Customer',
+                                     meter_name: 'Gas Meter',
+                                     meter_id: txRecord.meterNumber,
+                                     amount: txRecord.amount.toLocaleString(),
+                                     token: apiResult.token || 'Remote GPRS Topup',
+                                     transaction_id: txRecord.id.toString(),
+                                     volume: totalVolume
+                                 },
+                                 relatedEntity: { type: 'USER', id: consumer.userId.toString() }
+                             });
 
                             if (consumer.user.email) {
                                 await emailQueue.add('customer-gas-recharge-email', {
@@ -444,20 +446,34 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                     if (token) {
                         try {
                             const { emailQueue } = await import('../queues/email.queue');
-                            await emailQueue.add('gas-recharge-success', {
-                                to: consumerProfile.user.phone,
-                                templateType: 'gas-recharge-success',
-                                data: {
-                                    customer_name: consumerProfile.fullName || consumerProfile.user.name || 'Valued Customer',
-                                    meter_name: meter.aliasName || 'Meter',
-                                    meter_id: meter.meterNumber,
-                                    amount: initialTopup.amount.toLocaleString(),
-                                    token: token,
-                                    transaction_id: order.id.toString(),
-                                    volume: initialTopup.units
-                                },
-                                relatedEntity: { type: 'USER', id: consumerProfile.userId.toString() }
-                            });
+                            
+                            let paymentPhone: string | null = null;
+                             if (order.metadata) {
+                                 try {
+                                     const meta = JSON.parse(order.metadata);
+                                     if (meta && meta.paymentPhone) {
+                                         paymentPhone = meta.paymentPhone;
+                                     }
+                                 } catch (e) {
+                                     console.error('Failed to parse order metadata for paymentPhone:', e);
+                                 }
+                             }
+                             const smsDestination = paymentPhone || consumerProfile.user.phone;
+                             
+                             await emailQueue.add('gas-recharge-success', {
+                                 to: smsDestination,
+                                 templateType: 'gas-recharge-success',
+                                 data: {
+                                     customer_name: consumerProfile.fullName || consumerProfile.user.name || 'Valued Customer',
+                                     meter_name: meter.aliasName || 'Meter',
+                                     meter_id: meter.meterNumber,
+                                     amount: initialTopup.amount.toLocaleString(),
+                                     token: token,
+                                     transaction_id: order.id.toString(),
+                                     volume: initialTopup.units
+                                 },
+                                 relatedEntity: { type: 'USER', id: consumerProfile.userId.toString() }
+                             });
                             
                             if (consumerProfile.user.email) {
                                 await emailQueue.add('customer-gas-recharge-email', {

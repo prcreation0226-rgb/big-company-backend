@@ -341,7 +341,8 @@ export const topupGas = async (req: AuthRequest, res: Response) => {
                                 paymentMethod: 'mobile_money',
                                 gateway: 'palmkash',
                                 externalRef: palmKashTransactionId,
-                                reference: palmKashRef // Webhook uses startsWith('GAS-') on this
+                                reference: palmKashRef, // Webhook uses startsWith('GAS-') on this
+                                paymentPhone: req.body.phone || (consumerProfile as any).user?.phone || req.body.customer_phone || null
                               }
                             : { paymentMethod: payment_method || 'wallet' }
                     )

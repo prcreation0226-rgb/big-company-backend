@@ -346,6 +346,7 @@ export const topupWallet = async (req: AuthRequest, res: Response) => {
                     type: 'topup',
                     amount,
                     description: `Wallet topup via ${payment_method || 'mobile money'}`,
+                    paymentPhone: phone || null,
                     status: 'pending',
                     reference: referenceId
                 }

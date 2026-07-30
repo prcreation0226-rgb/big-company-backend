@@ -266,6 +266,7 @@ export const initiateGasMeterRecharge = async (req: AuthRequest, res: Response) 
                 amount: totalMoneyAmount,
                 isVendByUnit: !!isVendByUnit,
                 paymentMethod: paymentMethod || 'wallet',
+                paymentPhone: (paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel') ? (phone || null) : null,
                 status: paymentMethod === 'mobile_money' ? 'PENDING_PAYMENT' : 'PENDING',
                 apiReference: customerRef,
                 operatorId: userId || null, // Track who made the call
