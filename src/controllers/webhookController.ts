@@ -134,7 +134,7 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                 const { emailQueue } = await import('../queues/email.queue');
 
                 // 1. Send SMS (customer-wallet-topup -> CUS-SMS-003)
-                const smsDestination = (transaction as any).paymentPhone || wallet.consumerProfile.user.phone;
+                const smsDestination = wallet.consumerProfile.user.phone;
                 if (smsDestination) {
                   await emailQueue.add('customer-wallet-topup-sms', {
                     to: smsDestination,
