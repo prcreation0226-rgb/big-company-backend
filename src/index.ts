@@ -16,6 +16,7 @@ import webhookRoutes from './routes/webhookRoutes';
 import ipDebugRoutes from './routes/ipDebugRoutes';
 import gasMeterRechargeRoutes from './routes/gasMeterRechargeRoutes';
 import contentRoutes from './routes/contentRoutes';
+import ussdRoutes from './routes/ussdRoutes';
 console.log('--- Server Starting ---');
 
 dotenv.config();
@@ -99,6 +100,7 @@ app.use('/api/debug', ipDebugRoutes); // Temporary IP debug endpoint
 app.use('/debug', debugRoutes); // Public debug endpoint
 app.use('/gas-recharge', gasMeterRechargeRoutes); // Gas Meter Recharge module
 app.use('/content', contentRoutes); // News and Blog management
+app.use('/api/ussd', ussdRoutes); // USSD Menu Flow module
 setAppInstance(app); // Enable route listing in debug
 
 app.get('/', (req, res) => {
