@@ -1180,3 +1180,15 @@ model CustomProfitInvoice {
 
   @@map("custom_profit_invoices")
 }
+
+model UssdSession {
+  id              String   @id @default(uuid())
+  sessionId       String   @unique
+  phoneNumber     String
+  accumulatedText String   @default("")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("ussdsession")
+}
+

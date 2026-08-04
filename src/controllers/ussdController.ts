@@ -26,7 +26,7 @@ function normalizePhoneNumber(phone: string): string {
  * POST /api/ussd
  * Body: { sessionId, phoneNumber, serviceCode, text }
  */
-export const handleUSSDRequest = async (req: Request, res: Response) => {
+export const handleUSSDRequestCore = async (req: Request, res: Response) => {
   const { sessionId, phoneNumber, serviceCode, text = '' } = req.body;
 
   if (!phoneNumber) {
@@ -594,3 +594,262 @@ export const handleUSSDRequest = async (req: Request, res: Response) => {
     return res.send('END System error occurred. Please try again later.');
   }
 };
+
+/**
+ * Capture response body/headers for internal redirection/translation.
+ */
+class USSDResponseCapture {
+  public sentText: string = '';
+  public statusVal: number = 200;
+  public headers: { [key: string]: string } = {};
+
+  send(text: string) {
+    this.sentText = text;
+    return this;
+  }
+  status(val: number) {
+    this.statusVal = val;
+    return this;
+  }
+  setHeader(name: string, value: string) {
+    this.headers[name] = value;
+    return this;
+  }
+  header(name: string, value: string) {
+    this.headers[name] = value;
+    return this;
+  }
+}
+
+/**
+ * Helper to parse fields from a raw XML string.
+ */
+function parseXMLField(xml: string, tag: string): string {
+  const match = xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i'));
+  return match ? match[1].trim() : '';
+}
+
+/**
+ * Wrapper USSD request router that handles MTN XML, Airtel Form Parameters, and JSON.
+ */
+export const handleUSSDRequest = async (req: Request, res: Response) => {
+  const contentType = req.headers['content-type'] || '';
+  const bodyText = typeof req.body === 'string' ? req.body : '';
+
+  const isXML = contentType.includes('xml') || bodyText.includes('<?xml') || bodyText.includes('<request');
+  const isAirtel = req.body && (req.body.MSISDN || req.body.userid || req.body.clean);
+
+  if (isXML) {
+    // ----------------------------------------------------
+    // MTN USSD FLOW (XML)
+    // ----------------------------------------------------
+    try {
+      const xml = bodyText;
+      const typeMatch = xml.match(/<request\s+[^>]*type=["']([^"']+)["']/i);
+      const requestType = typeMatch ? typeMatch[1].trim() : 'pull';
+
+      const sessionId = parseXMLField(xml, 'sessionId');
+      const msisdn = parseXMLField(xml, 'msisdn');
+
+      if (!sessionId || !msisdn) {
+        return res.status(400).send('Missing sessionId or msisdn');
+      }
+
+      // Cleanup Request
+      if (requestType === 'cleanup') {
+        await prisma.ussdSession.deleteMany({ where: { sessionId } });
+        return res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<response>
+  <status>cleaned</status>
+</response>`);
+      }
+
+      const subscriberInput = parseXMLField(xml, 'subscriberInput');
+      const newRequest = parseXMLField(xml, 'newRequest'); // '1' or '0'
+
+      let text = '';
+      if (newRequest === '1') {
+        // Clear any old session
+        await prisma.ussdSession.deleteMany({ where: { sessionId } });
+        await prisma.ussdSession.create({
+          data: { sessionId, phoneNumber: msisdn, accumulatedText: '' }
+        });
+        text = '';
+      } else {
+        // Continuing request
+        let session = await prisma.ussdSession.findUnique({ where: { sessionId } });
+        if (!session) {
+          session = await prisma.ussdSession.create({
+            data: { sessionId, phoneNumber: msisdn, accumulatedText: '' }
+          });
+        }
+        
+        let newText = '';
+        if (session.accumulatedText) {
+          newText = `${session.accumulatedText}*${subscriberInput}`;
+        } else {
+          newText = subscriberInput;
+        }
+
+        await prisma.ussdSession.update({
+          where: { sessionId },
+          data: { accumulatedText: newText }
+        });
+        text = newText;
+      }
+
+      // Call original core logic
+      const mockReq = {
+        body: {
+          sessionId,
+          phoneNumber: msisdn,
+          serviceCode: '*123#',
+          text
+        }
+      } as Request;
+
+      const capture = new USSDResponseCapture();
+      await handleUSSDRequestCore(mockReq, capture as unknown as Response);
+
+      const responseString = capture.sentText;
+      let freeflowState = 'FC'; // Default: continue
+      let displayMessage = responseString;
+
+      if (responseString.startsWith('CON ')) {
+        freeflowState = 'FC';
+        displayMessage = responseString.substring(4);
+      } else if (responseString.startsWith('END ')) {
+        freeflowState = 'FB';
+        displayMessage = responseString.substring(4);
+        // Clean up session since it's ended
+        await prisma.ussdSession.deleteMany({ where: { sessionId } });
+      }
+
+      // Build XML Response
+      const responseXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<response>
+    <msisdn>${msisdn}</msisdn>
+    <sessionid>${sessionId}</sessionid>
+    <freeflow>
+        <freeflowState>${freeflowState}</freeflowState>
+    </freeflow>
+    <applicationResponse>${displayMessage.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</applicationResponse>
+</response>`;
+
+      return res.type('application/xml').status(200).send(responseXml);
+
+    } catch (err) {
+      console.error('MTN USSD Error:', err);
+      return res.status(200).type('application/xml').send(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<response>
+    <freeflow>
+        <freeflowState>FB</freeflowState>
+    </freeflow>
+    <applicationResponse>System error. Please try again later.</applicationResponse>
+</response>`);
+    }
+
+  } else if (isAirtel) {
+    // ----------------------------------------------------
+    // AIRTEL USSD FLOW (Form URL-encoded)
+    // ----------------------------------------------------
+    try {
+      const { MSISDN, input, clean, MSC } = req.body;
+
+      if (!MSISDN) {
+        return res.status(400).send('Missing MSISDN');
+      }
+
+      const airtelSessionId = `airtel-${MSISDN}`;
+
+      // Cleanup Request
+      if (clean === 'clean-session') {
+        await prisma.ussdSession.deleteMany({ where: { sessionId: airtelSessionId } });
+        res.setHeader('Expires', '-1');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Cache-Control', 'max-age=0');
+        return res.status(200).send('');
+      }
+
+      // Detect first request: either no session exists, or the input is root dial code (e.g. starts with * or equals 121)
+      let session = await prisma.ussdSession.findUnique({ where: { sessionId: airtelSessionId } });
+      const isFirstRequest = !session || (input && (input.startsWith('*') || input === '121'));
+
+      let text = '';
+      if (isFirstRequest) {
+        await prisma.ussdSession.deleteMany({ where: { sessionId: airtelSessionId } });
+        await prisma.ussdSession.create({
+          data: { sessionId: airtelSessionId, phoneNumber: MSISDN, accumulatedText: '' }
+        });
+        text = '';
+      } else {
+        // Continuing request
+        if (!session) {
+          session = await prisma.ussdSession.create({
+            data: { sessionId: airtelSessionId, phoneNumber: MSISDN, accumulatedText: '' }
+          });
+        }
+
+        let newText = '';
+        if (session.accumulatedText) {
+          newText = `${session.accumulatedText}*${input}`;
+        } else {
+          newText = input;
+        }
+
+        await prisma.ussdSession.update({
+          where: { sessionId: airtelSessionId },
+          data: { accumulatedText: newText }
+        });
+        text = newText;
+      }
+
+      // Call original core logic
+      const mockReq = {
+        body: {
+          sessionId: airtelSessionId,
+          phoneNumber: MSISDN,
+          serviceCode: MSC || '*121#',
+          text
+        }
+      } as Request;
+
+      const capture = new USSDResponseCapture();
+      await handleUSSDRequestCore(mockReq, capture as unknown as Response);
+
+      const responseString = capture.sentText;
+      let freeflowState = 'FC'; // Default: continue
+      let displayMessage = responseString;
+
+      if (responseString.startsWith('CON ')) {
+        freeflowState = 'FC';
+        displayMessage = responseString.substring(4);
+      } else if (responseString.startsWith('END ')) {
+        freeflowState = 'FB';
+        displayMessage = responseString.substring(4);
+        await prisma.ussdSession.deleteMany({ where: { sessionId: airtelSessionId } });
+      }
+
+      // Set Airtel headers
+      res.setHeader('Freeflow', freeflowState);
+      res.setHeader('Expires', '-1');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Cache-Control', 'max-age=0');
+      res.type('text/plain');
+
+      return res.status(200).send(displayMessage);
+
+    } catch (err) {
+      console.error('Airtel USSD Error:', err);
+      res.setHeader('Freeflow', 'FB');
+      return res.status(200).type('text/plain').send('System error. Please try again later.');
+    }
+
+  } else {
+    // ----------------------------------------------------
+    // FALLBACK (JSON/Postman) FLOW
+    // ----------------------------------------------------
+    return handleUSSDRequestCore(req, res);
+  }
+};
+
