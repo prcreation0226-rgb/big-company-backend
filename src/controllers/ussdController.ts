@@ -42,7 +42,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
     // ----------------------------------------------------
     if (parts.length === 0) {
       const menu = [
-        'CON Gura Gas',
+        'CON Welcome to Big POS',
         '1. Gura Gas',
         '2. Ongera amafaranga',
         '3. Kora order',
