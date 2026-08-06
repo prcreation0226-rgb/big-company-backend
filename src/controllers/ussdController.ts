@@ -27,7 +27,16 @@ function normalizePhoneNumber(phone: string): string {
  * Body: { sessionId, phoneNumber, serviceCode, text }
  */
 export const handleUSSDRequestCore = async (req: Request, res: Response) => {
-  const { sessionId, phoneNumber, serviceCode, text = '' } = req.body;
+  let body = req.body;
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body);
+    } catch (e) {
+      // Not a valid JSON string, keep as is
+    }
+  }
+
+  const { sessionId, phoneNumber, serviceCode, text = '' } = body || {};
 
   if (!phoneNumber) {
     return res.send('END Error: Phone number is missing from session.');
