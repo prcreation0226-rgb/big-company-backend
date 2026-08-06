@@ -43,7 +43,16 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
   }
 
   // Parse path choices split by asterisk
-  const parts = text.toString().split('*').map((s: string) => s.trim()).filter((s: string) => s !== '');
+  let parts = text.toString().split('*').map((s: string) => s.trim()).filter((s: string) => s !== '');
+  
+  // Strip service code prefix if present (e.g. 939*15, 939, 121, 123)
+  if (parts.length > 0 && ['939', '121', '123'].includes(parts[0])) {
+    if (parts[0] === '939' && parts[1] === '15') {
+      parts = parts.slice(2);
+    } else {
+      parts = parts.slice(1);
+    }
+  }
   
   try {
     // ----------------------------------------------------
