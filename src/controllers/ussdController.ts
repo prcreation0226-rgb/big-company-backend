@@ -164,7 +164,8 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         if (confirmVal === '1') {
           // Trigger external Mobile Money API push (STK prompt) to the customer’s phone
           const targetPhone = normalizePhoneNumber(phoneNumber);
-          const txRef = `GASRCH-USSD-${meterId}-${Date.now()}`;
+          const provider = meter.isGprs ? 'zhongyi' : 'stronpower';
+          const txRef = `GASRCH-${meter.meterType || 'TOKEN'}-${provider}-${Date.now()}`;
 
           // Log pending Gas Recharge Transaction
           await prisma.gasRechargeTransaction.create({
@@ -500,8 +501,14 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       }
       const rewardWalletId = parts[1];
 
+      const normalized = '+' + normalizePhoneNumber(rewardWalletId);
       const consumer = await prisma.consumerProfile.findFirst({
-        where: { gasRewardWalletId: rewardWalletId }
+        where: {
+          OR: [
+            { gasRewardWalletId: rewardWalletId },
+            { gasRewardWalletId: normalized }
+          ]
+        }
       });
       if (!consumer) {
         return res.send('END Error: Invalid Reward wallet ID.');

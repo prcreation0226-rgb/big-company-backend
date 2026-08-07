@@ -8,30 +8,53 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("@prisma/client");
+const dotenv_1 = __importDefault(require("dotenv"));
+dotenv_1.default.config();
 const prisma = new client_1.PrismaClient();
 function main() {
     return __awaiter(this, void 0, void 0, function* () {
         console.log('Populating location data for test retailers...');
         // Update Retailer 1 (Corner Shop111)
-        yield prisma.retailerProfile.update({
-            where: { id: 1 },
-            data: {
-                province: 'Kigali',
-                district: 'Gasabo',
-                sector: 'Remera'
-            }
-        });
+        try {
+            yield prisma.retailerProfile.update({
+                where: { id: 1 },
+                data: {
+                    province: 'Kigali',
+                    district: 'Gasabo',
+                    sector: 'Remera'
+                }
+            });
+        }
+        catch (e) { }
         // Update Retailer 5 (test 3)
-        yield prisma.retailerProfile.update({
-            where: { id: 5 },
-            data: {
-                province: 'Kigali',
-                district: 'Kicukiro',
-                sector: 'Kagarama'
-            }
-        });
+        try {
+            yield prisma.retailerProfile.update({
+                where: { id: 5 },
+                data: {
+                    province: 'Kigali',
+                    district: 'Kicukiro',
+                    sector: 'Kagarama'
+                }
+            });
+        }
+        catch (e) { }
+        // Update Retailer 24 (IKIZERE SHOP)
+        try {
+            yield prisma.retailerProfile.update({
+                where: { id: 24 },
+                data: {
+                    province: 'Kigali',
+                    district: 'Gasabo',
+                    sector: 'Remera'
+                }
+            });
+        }
+        catch (e) { }
         console.log('✅ Location data populated.');
     });
 }
