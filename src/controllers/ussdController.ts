@@ -651,11 +651,34 @@ function parseXMLField(xml: string, tag: string): string {
  * Wrapper USSD request router that handles MTN XML, Airtel Form Parameters, and JSON.
  */
 export const handleUSSDRequest = async (req: Request, res: Response) => {
-  const contentType = req.headers['content-type'] || '';
-  const bodyText = typeof req.body === 'string' ? req.body : '';
+  const contentType = (req.headers && req.headers['content-type']) || '';
+  let bodyText = typeof req.body === 'string' ? req.body : '';
 
-  const isXML = contentType.includes('xml') || bodyText.includes('<?xml') || bodyText.includes('<request');
-  const isAirtel = req.body && (req.body.MSISDN || req.body.userid || req.body.clean);
+  let parsedBody = req.body;
+  if (typeof req.body === 'object' && req.body !== null) {
+    const keys = Object.keys(req.body);
+    if (keys.length === 1 && keys[0].includes('<?xml')) {
+      bodyText = keys[0] + '=' + req.body[keys[0]];
+    }
+  }
+
+  const isXML = bodyText.trim().startsWith('<?xml') || bodyText.includes('<request') || contentType.includes('xml');
+  
+  let isAirtel = false;
+  if (!isXML) {
+    if (typeof req.body === 'string') {
+      const urlParams = new URLSearchParams(req.body);
+      if (urlParams.has('MSISDN') || urlParams.has('userid') || urlParams.has('clean')) {
+        isAirtel = true;
+        parsedBody = {};
+        urlParams.forEach((val, key) => {
+          parsedBody[key] = val;
+        });
+      }
+    } else if (req.body && (req.body.MSISDN || req.body.userid || req.body.clean)) {
+      isAirtel = true;
+    }
+  }
 
   if (isXML) {
     // ----------------------------------------------------
@@ -772,7 +795,7 @@ export const handleUSSDRequest = async (req: Request, res: Response) => {
     // AIRTEL USSD FLOW (Form URL-encoded)
     // ----------------------------------------------------
     try {
-      const { MSISDN, input, clean, MSC } = req.body;
+      const { MSISDN, input, clean, MSC } = parsedBody;
 
       if (!MSISDN) {
         return res.status(400).send('Missing MSISDN');

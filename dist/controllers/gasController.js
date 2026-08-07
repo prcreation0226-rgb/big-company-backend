@@ -49,6 +49,7 @@ exports.getOrderDetails = exports.getCustomerOrders = exports.getGasRewardsLeade
 const prisma_1 = __importDefault(require("../utils/prisma"));
 const pipingMeter_service_1 = __importDefault(require("../services/pipingMeter.service"));
 const tokenMeter_service_1 = __importDefault(require("../services/tokenMeter.service"));
+const gprsMapping_1 = require("../config/gprsMapping");
 // Get gas configuration (price, etc)
 const getGasConfig = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
@@ -198,13 +199,16 @@ const addGasMeter = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         if (existingMeter) {
             return res.status(400).json({ success: false, error: 'Meter number already registered' });
         }
+        const matchedGprs = gprsMapping_1.gprsMapping.find(m => m.meterNo === meter_number || m.meterNo === meter_number.replace(/^MTR-/i, ''));
         const meter = yield prisma_1.default.gasMeter.create({
             data: {
                 consumerId: consumerProfile.id,
                 meterNumber: meter_number,
-                meterKey: meter_key,
-                serialNo: serial_no,
-                meterType: meter_type === 'PIPING' || meter_type === 'GPRS' ? 'PIPING' : 'TOKEN',
+                imei: matchedGprs ? matchedGprs.imei : null,
+                serialNo: matchedGprs ? matchedGprs.serialNo : (serial_no || null),
+                meterKey: matchedGprs ? matchedGprs.meterKey : (meter_key || null),
+                isGprs: matchedGprs ? true : false,
+                meterType: matchedGprs ? 'TOKEN' : (meter_type === 'PIPING' || meter_type === 'GPRS' ? 'PIPING' : 'TOKEN'),
                 aliasName: alias_name || 'My Meter',
                 ownerName: owner_name,
                 ownerPhone: owner_phone,
@@ -318,6 +322,7 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             palmKashTransactionId = pmResult.transactionId;
         }
         const result = yield prisma_1.default.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
+            var _a;
             // Create topup record — status depends on payment method
             const topup = yield tx.gasTopup.create({
                 data: {
@@ -347,7 +352,8 @@ const topupGas = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                             paymentMethod: 'mobile_money',
                             gateway: 'palmkash',
                             externalRef: palmKashTransactionId,
-                            reference: palmKashRef // Webhook uses startsWith('GAS-') on this
+                            reference: palmKashRef, // Webhook uses startsWith('GAS-') on this
+                            paymentPhone: req.body.phone || ((_a = consumerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || req.body.customer_phone || null
                         }
                         : { paymentMethod: payment_method || 'wallet' })
                 }

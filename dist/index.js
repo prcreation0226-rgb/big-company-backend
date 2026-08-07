@@ -63,6 +63,7 @@ const webhookRoutes_1 = __importDefault(require("./routes/webhookRoutes"));
 const ipDebugRoutes_1 = __importDefault(require("./routes/ipDebugRoutes"));
 const gasMeterRechargeRoutes_1 = __importDefault(require("./routes/gasMeterRechargeRoutes"));
 const contentRoutes_1 = __importDefault(require("./routes/contentRoutes"));
+const ussdRoutes_1 = __importDefault(require("./routes/ussdRoutes"));
 console.log('--- Server Starting ---');
 dotenv_1.default.config();
 const app = (0, express_1.default)();
@@ -80,6 +81,7 @@ const allowedOrigins = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:9001",
     "https://big-company-frontend.vercel.app",
+    "https://big-company-backend-production.up.railway.app",
     "https://big-pos-backend-production.up.railway.app",
     "https://big-pos.netlify.app",
     "https://bigpos.kiaantechnology.com",
@@ -138,6 +140,7 @@ app.use('/api/debug', ipDebugRoutes_1.default); // Temporary IP debug endpoint
 app.use('/debug', debugRoutes_1.default); // Public debug endpoint
 app.use('/gas-recharge', gasMeterRechargeRoutes_1.default); // Gas Meter Recharge module
 app.use('/content', contentRoutes_1.default); // News and Blog management
+app.use('/api/ussd', ussdRoutes_1.default); // USSD Menu Flow module
 (0, debugRoutes_1.setAppInstance)(app); // Enable route listing in debug
 app.get('/', (req, res) => {
     res.send('Big Company API is running');

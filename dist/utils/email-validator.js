@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.validateBusinessEmailFormat = exports.validateBigDomain = void 0;
+exports.sanitizeEmail = exports.validateBusinessEmailFormat = exports.validateBigDomain = void 0;
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
 /**
@@ -39,3 +39,18 @@ const validateBusinessEmailFormat = (email, role) => {
     return false;
 };
 exports.validateBusinessEmailFormat = validateBusinessEmailFormat;
+/**
+ * Strips out "www." from the beginning of an email if present mistakenly.
+ * @param email The email address to sanitize
+ * @returns string
+ */
+const sanitizeEmail = (email) => {
+    if (!email)
+        return '';
+    let cleaned = email.trim().toLowerCase();
+    if (cleaned.startsWith('www.')) {
+        cleaned = cleaned.substring(4);
+    }
+    return cleaned;
+};
+exports.sanitizeEmail = sanitizeEmail;

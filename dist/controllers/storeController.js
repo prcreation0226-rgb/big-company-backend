@@ -749,9 +749,7 @@ const getMyOrders = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         const sales = yield prisma_1.default.sale.findMany({
             where: { consumerId: consumerProfile.id },
             include: {
-                saleItems: {
-                    include: { product: true }
-                }
+                saleItems: true
             },
             orderBy: { createdAt: 'desc' }
         });
@@ -772,6 +770,12 @@ const getMyOrders = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                 Object.assign(Object.assign({}, r), { phone: ((_a = userMap.get(r.userId)) === null || _a === void 0 ? void 0 : _a.phone) || 'N/A' })
             ];
         }));
+        // Fetch products separately to prevent Prisma from crashing on deleted products
+        const productIds = Array.from(new Set(sales.flatMap(s => s.saleItems.map(si => si.productId))));
+        const products = yield prisma_1.default.product.findMany({
+            where: { id: { in: productIds } }
+        });
+        const productMap = new Map(products.map(p => [p.id, p]));
         // 2. Fetch CustomerOrders (Gas/Other)
         const otherOrders = yield prisma_1.default.customerOrder.findMany({
             where: { consumerId: consumerProfile.id },
@@ -790,15 +794,18 @@ const getMyOrders = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                     location: (retailerProfile === null || retailerProfile === void 0 ? void 0 : retailerProfile.address) || 'Unknown Location',
                     phone: (retailerProfile === null || retailerProfile === void 0 ? void 0 : retailerProfile.phone) || 'N/A'
                 },
-                items: sale.saleItems.map(item => ({
-                    id: item.id,
-                    product_id: item.productId,
-                    product_name: item.product.name,
-                    quantity: item.quantity,
-                    unit_price: item.price,
-                    total: item.price * item.quantity,
-                    image: item.product.image // Include product image
-                })),
+                items: sale.saleItems.map(item => {
+                    const product = productMap.get(item.productId);
+                    return {
+                        id: item.id,
+                        product_id: item.productId,
+                        product_name: (product === null || product === void 0 ? void 0 : product.name) || 'Unknown Product',
+                        quantity: item.quantity,
+                        unit_price: item.price,
+                        total: item.price * item.quantity,
+                        image: product === null || product === void 0 ? void 0 : product.image // Include product image
+                    };
+                }),
                 subtotal: sale.totalAmount, // Assuming no extra fees for now
                 delivery_fee: 0,
                 total: sale.totalAmount,

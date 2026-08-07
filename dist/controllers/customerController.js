@@ -367,6 +367,7 @@ const topupWallet = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                     type: 'topup',
                     amount,
                     description: `Wallet topup via ${payment_method || 'mobile money'}`,
+                    paymentPhone: phone || null,
                     status: 'pending',
                     reference: referenceId
                 }

@@ -170,9 +170,10 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                         if ((_b = wallet === null || wallet === void 0 ? void 0 : wallet.consumerProfile) === null || _b === void 0 ? void 0 : _b.user) {
                             const { emailQueue } = yield Promise.resolve().then(() => __importStar(require('../queues/email.queue')));
                             // 1. Send SMS (customer-wallet-topup -> CUS-SMS-003)
-                            if (wallet.consumerProfile.user.phone) {
+                            const smsDestination = wallet.consumerProfile.user.phone;
+                            if (smsDestination) {
                                 yield emailQueue.add('customer-wallet-topup-sms', {
-                                    to: wallet.consumerProfile.user.phone,
+                                    to: smsDestination,
                                     templateType: 'customer-wallet-topup',
                                     data: {
                                         customer_name: wallet.consumerProfile.fullName || wallet.consumerProfile.user.name || 'Customer',
@@ -335,8 +336,9 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                             });
                             if (consumer) {
                                 const { emailQueue } = yield Promise.resolve().then(() => __importStar(require('../queues/email.queue')));
+                                const smsDestination = txRecord.paymentPhone || consumer.user.phone || consumer.user.email || '';
                                 yield emailQueue.add('gas-recharge-success', {
-                                    to: consumer.user.phone || consumer.user.email || '',
+                                    to: smsDestination,
                                     templateType: 'gas-recharge-success',
                                     data: {
                                         customer_name: consumer.fullName || consumer.user.name || 'Valued Customer',
@@ -349,6 +351,22 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                                     },
                                     relatedEntity: { type: 'USER', id: consumer.userId.toString() }
                                 });
+                                if (consumer.user.email) {
+                                    yield emailQueue.add('customer-gas-recharge-email', {
+                                        to: consumer.user.email,
+                                        templateType: 'customer-gas-recharge-email',
+                                        data: {
+                                            customer_name: consumer.fullName || consumer.user.name || 'Valued Customer',
+                                            meter_name: 'Gas Meter',
+                                            meter_id: txRecord.meterNumber,
+                                            amount: txRecord.amount.toLocaleString(),
+                                            token: apiResult.token || 'Remote GPRS Topup',
+                                            transaction_id: txRecord.id.toString(),
+                                            volume: totalVolume
+                                        },
+                                        relatedEntity: { type: 'USER', id: consumer.userId.toString() }
+                                    });
+                                }
                             }
                         }
                         catch (notifyErr) {
@@ -446,8 +464,21 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                         if (token) {
                             try {
                                 const { emailQueue } = yield Promise.resolve().then(() => __importStar(require('../queues/email.queue')));
+                                let paymentPhone = null;
+                                if (order.metadata) {
+                                    try {
+                                        const meta = JSON.parse(order.metadata);
+                                        if (meta && meta.paymentPhone) {
+                                            paymentPhone = meta.paymentPhone;
+                                        }
+                                    }
+                                    catch (e) {
+                                        console.error('Failed to parse order metadata for paymentPhone:', e);
+                                    }
+                                }
+                                const smsDestination = paymentPhone || consumerProfile.user.phone;
                                 yield emailQueue.add('gas-recharge-success', {
-                                    to: consumerProfile.user.phone,
+                                    to: smsDestination,
                                     templateType: 'gas-recharge-success',
                                     data: {
                                         customer_name: consumerProfile.fullName || consumerProfile.user.name || 'Valued Customer',
