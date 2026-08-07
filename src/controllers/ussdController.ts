@@ -76,12 +76,21 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
     // OPTION 1: Gura Gas (Gas Recharge)
     // ====================================================
     if (choice === '1') {
-      // Step 1: Prompt Meter ID
+      // Step 1: Choose Meter type (Zamuka vs Tekana)
       if (parts.length === 1) {
+        return res.send('CON Choose Meter type;\n1. Zamuka\n2. Tekana');
+      }
+      const meterTypeChoice = parts[1];
+      if (meterTypeChoice !== '1' && meterTypeChoice !== '2') {
+        return res.send('END Invalid meter type selection.');
+      }
+
+      // Step 2: Prompt Meter ID
+      if (parts.length === 2) {
         return res.send('CON Enter Meter ID:');
       }
 
-      const meterId = parts[1];
+      const meterId = parts[2];
 
       // Verification: Check if Meter ID exists
       const meter = await prisma.gasMeter.findFirst({
@@ -91,8 +100,8 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         return res.send('END Invalid Meter ID. Please check the code and try again.');
       }
 
-      // Step 2: Select Amount (Pricing Menu)
-      if (parts.length === 2) {
+      // Step 3: Select Amount (Pricing Menu)
+      if (parts.length === 3) {
         // Fetch predefined gas pricing plans from database
         const pricingPlans = await prisma.gasPricingPlan.findMany({
           where: { isActive: true },
@@ -119,7 +128,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       }
 
       // Extract amount
-      const planIdx = parseInt(parts[2], 10) - 1;
+      const planIdx = parseInt(parts[3], 10) - 1;
       const pricingPlans = await prisma.gasPricingPlan.findMany({
         where: { isActive: true },
         take: 5
@@ -133,8 +142,8 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         selectedAmount = fallbacks[planIdx] || 1000;
       }
 
-      // Step 3: Select Payment Method
-      if (parts.length === 3) {
+      // Step 4: Select Payment Method
+      if (parts.length === 4) {
         const paymentMenu = [
           'CON Select Payment Method:',
           '1. Mobile Money',
@@ -143,15 +152,15 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         return res.send(paymentMenu);
       }
 
-      const paymentMethod = parts[3];
+      const paymentMethod = parts[4];
 
       // PAYMENT PATHWAY 1: Mobile Money
       if (paymentMethod === '1') {
-        if (parts.length === 4) {
+        if (parts.length === 5) {
           return res.send(`CON Confirm payment of ${selectedAmount} RWF for Meter ${meterId} via Mobile Money?\n1. Yes\n2. No`);
         }
 
-        const confirmVal = parts[4];
+        const confirmVal = parts[5];
         if (confirmVal === '1') {
           // Trigger external Mobile Money API push (STK prompt) to the customer’s phone
           const targetPhone = normalizePhoneNumber(phoneNumber);
@@ -191,17 +200,17 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
       // PAYMENT PATHWAY 2: Wallet
       if (paymentMethod === '2') {
-        if (parts.length === 4) {
+        if (parts.length === 5) {
           return res.send('CON Enter Card Number:');
         }
-        const cardNum = parts[4];
-
-        if (parts.length === 5) {
-          return res.send('CON Enter Card PIN:');
-        }
-        const cardPin = parts[5];
+        const cardNum = parts[5];
 
         if (parts.length === 6) {
+          return res.send('CON Enter Card PIN:');
+        }
+        const cardPin = parts[6];
+
+        if (parts.length === 7) {
           const walletTypeMenu = [
             'CON Select Wallet Type:',
             '1. Dashboard Balance',
@@ -209,17 +218,17 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
           ].join('\n');
           return res.send(walletTypeMenu);
         }
-        const walletTypeChoice = parts[6];
+        const walletTypeChoice = parts[7];
         if (walletTypeChoice !== '1' && walletTypeChoice !== '2') {
           return res.send('END Invalid selection.');
         }
         const walletTypeName = walletTypeChoice === '1' ? 'Dashboard Balance' : 'Credit Balance';
 
-        if (parts.length === 7) {
+        if (parts.length === 8) {
           return res.send(`CON Confirm payment of ${selectedAmount} RWF for Meter ${meterId} from your ${walletTypeName}?\n1. Yes\n2. No`);
         }
 
-        const confirmVal = parts[7];
+        const confirmVal = parts[8];
         if (confirmVal === '1') {
           // Authenticate Card Number and PIN
           const card = await prisma.nfcCard.findFirst({

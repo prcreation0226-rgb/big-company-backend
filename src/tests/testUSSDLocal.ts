@@ -60,7 +60,7 @@ async function testAll() {
     await runStep('Option 4 - Share Rewards (Invalid decimals)', '4*REW123*1*MTR-001*1.234*0788100002*1');
 
     // 4. Option 1 Gura Gas (Invalid Meter check)
-    await runStep('Option 1 - Gura Gas (Invalid Meter)', '1*MTR-INVALID');
+    await runStep('Option 1 - Gura Gas (Invalid Meter)', '1*1*MTR-INVALID');
 
     // 5. Option 3 Kora Order Retailer Selection Menu
     await runStep('Option 3 - Province Selection', '3');

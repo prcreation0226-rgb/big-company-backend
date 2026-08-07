@@ -62,7 +62,7 @@ function testAll() {
             // 3. Option 4 Reward sharing (decimal validation checks)
             yield runStep('Option 4 - Share Rewards (Invalid decimals)', '4*REW123*1*MTR-001*1.234*0788100002*1');
             // 4. Option 1 Gura Gas (Invalid Meter check)
-            yield runStep('Option 1 - Gura Gas (Invalid Meter)', '1*MTR-INVALID');
+            yield runStep('Option 1 - Gura Gas (Invalid Meter)', '1*1*MTR-INVALID');
             // 5. Option 3 Kora Order Retailer Selection Menu
             yield runStep('Option 3 - Province Selection', '3');
             yield runStep('Option 3 - District Selection', '3*1');
