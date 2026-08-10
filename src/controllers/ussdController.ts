@@ -22,6 +22,36 @@ function normalizePhoneNumber(phone: string): string {
 }
 
 /**
+ * Helper to find NFC card supporting friendly suffix lookup or direct UID lookup.
+ */
+async function findNfcCard(cardNumInput: string) {
+  const cleaned = cardNumInput.trim().toUpperCase().replace(/:/g, '');
+  
+  // 1. Direct search by uid (exactly as is)
+  let card = await prisma.nfcCard.findFirst({
+    where: { uid: cardNumInput.trim() }
+  });
+  if (card) return card;
+
+  // 2. Query all cards and find by cleaned/friendly match
+  const cards = await prisma.nfcCard.findMany();
+  card = cards.find(c => {
+    const dbCleaned = c.uid.toUpperCase().replace(/:/g, '');
+    if (dbCleaned === cleaned) return true;
+    if (cleaned.startsWith('NFC-')) {
+      const suffix = cleaned.substring(4);
+      return dbCleaned.endsWith(suffix);
+    }
+    if (cleaned.length === 4) {
+      return dbCleaned.endsWith(cleaned);
+    }
+    return false;
+  });
+
+  return card || null;
+}
+
+/**
  * Main stateless USSD handler.
  * POST /api/ussd
  * Body: { sessionId, phoneNumber, serviceCode, text }
@@ -232,9 +262,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         const confirmVal = parts[8];
         if (confirmVal === '1') {
           // Authenticate Card Number and PIN
-          const card = await prisma.nfcCard.findFirst({
-            where: { uid: cardNum }
-          });
+          const card = await findNfcCard(cardNum);
 
           if (!card || card.pin !== cardPin) {
             return res.send('END Access denied.');
@@ -329,9 +357,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       const cardNum = parts[1];
 
       // Validate Card Number is active and exists
-      const card = await prisma.nfcCard.findFirst({
-        where: { uid: cardNum }
-      });
+      const card = await findNfcCard(cardNum);
       if (!card || card.status !== 'active') {
         return res.send('END Error: Card is invalid or inactive.');
       }
@@ -530,6 +556,17 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       }
       const meterId = parts[3];
 
+      // Validate target meter ID exists and matches the selected type
+      const targetMeter = await prisma.gasMeter.findFirst({
+        where: { meterNumber: meterId }
+      });
+      if (!targetMeter) {
+        return res.send('END Invalid Meter ID. Please check the code and try again.');
+      }
+      if (targetMeter.meterType !== meterType) {
+        return res.send(`END Error: Meter ID matches a ${targetMeter.meterType} meter, but you selected ${meterType}.`);
+      }
+
       if (parts.length === 4) {
         return res.send('CON Enter Units:');
       }
@@ -573,6 +610,27 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
           })
         ]);
 
+        // Trigger Gas recharge action on the physical meter
+        try {
+          if (meterType === 'TOKEN') {
+            await tokenMeterService.rechargeTokenMeter({
+              meterNumber: meterId,
+              amount: unitsValue,
+              isVendByUnit: true,
+              customerRef: `GASRCH-SHARE-${meterId}-${Date.now()}`
+            });
+          } else {
+            await pipingMeterService.rechargePipingMeter({
+              meterNumber: meterId,
+              amount: unitsValue,
+              isVendByUnit: true,
+              customerRef: `GASRCH-SHARE-${meterId}-${Date.now()}`
+            });
+          }
+        } catch (rechargeErr) {
+          console.error('Failed to trigger physical meter recharge for shared rewards:', rechargeErr);
+        }
+
         const smsMessage = `You have received ${unitsValue} m3 of gas shared to Meter ${meterId} from Reward Wallet ${rewardWalletId}. Thank you!`;
         await SMSService.sendSMS(
           normalizedSMSPhone,
@@ -600,9 +658,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       }
       const cardPin = parts[2];
 
-      const card = await prisma.nfcCard.findFirst({
-        where: { uid: cardNum }
-      });
+      const card = await findNfcCard(cardNum);
       if (!card || card.pin !== cardPin) {
         return res.send('END Access denied.');
       }
@@ -880,10 +936,10 @@ export const handleUSSDRequest = async (req: Request, res: Response) => {
 
       if (responseString.startsWith('CON ')) {
         freeflowState = 'FC';
-        displayMessage = responseString.substring(4);
+        displayMessage = responseString;
       } else if (responseString.startsWith('END ')) {
         freeflowState = 'FB';
-        displayMessage = responseString.substring(4);
+        displayMessage = responseString;
         await prisma.ussdSession.deleteMany({ where: { sessionId: airtelSessionId } });
       }
 
