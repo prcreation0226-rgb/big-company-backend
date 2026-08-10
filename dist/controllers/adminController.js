@@ -230,7 +230,7 @@ const getDashboard = (req, res) => __awaiter(void 0, void 0, void 0, function* (
         ]);
         // Fetch all related consumer profiles in a single query to avoid crashes on inconsistent/orphaned DB records
         const allConsumerIds = Array.from(new Set([
-            ...recentSalesRaw.map(s => s.customerId).filter((id) => id !== null && id !== undefined),
+            ...recentSalesRaw.map(s => s.consumerId).filter((id) => id !== null && id !== undefined),
             ...recentLoansRaw.map(l => l.consumerId).filter((id) => id !== null && id !== undefined),
             ...recentGasRaw.map(g => g.consumerId).filter((id) => id !== null && id !== undefined)
         ]));
@@ -238,7 +238,7 @@ const getDashboard = (req, res) => __awaiter(void 0, void 0, void 0, function* (
             where: { id: { in: allConsumerIds } }
         });
         const consumerMap = new Map(matchingConsumers.map(c => [c.id, c]));
-        const recentSales = recentSalesRaw.map(s => (Object.assign(Object.assign({}, s), { consumerProfile: s.customerId ? consumerMap.get(s.customerId) || null : null })));
+        const recentSales = recentSalesRaw.map(s => (Object.assign(Object.assign({}, s), { consumerProfile: s.consumerId ? consumerMap.get(s.consumerId) || null : null })));
         const recentLoans = recentLoansRaw.map(l => (Object.assign(Object.assign({}, l), { consumerProfile: l.consumerId ? consumerMap.get(l.consumerId) || null : null })));
         const recentGas = recentGasRaw.map(g => (Object.assign(Object.assign({}, g), { consumerProfile: g.consumerId ? consumerMap.get(g.consumerId) || null : null })));
         const activities = [
