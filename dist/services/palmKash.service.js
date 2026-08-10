@@ -272,7 +272,7 @@ class PalmKashService {
                 const timestamp = Math.floor(Date.now() / 1000).toString();
                 const payload = `${timestamp}.${bodyString}`;
                 const signature = crypto_1.default
-                    .createHmac('sha256', Buffer.from(this.secretKey.trim(), 'utf8'))
+                    .createHmac('sha256', Buffer.from(this.clientId.trim(), 'utf8'))
                     .update(Buffer.from(payload, 'utf8'))
                     .digest('hex');
                 let response;
