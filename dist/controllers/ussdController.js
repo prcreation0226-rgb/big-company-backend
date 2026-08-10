@@ -136,6 +136,11 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
             if (!meter) {
                 return res.send('END Invalid Meter ID. Please check the code and try again.');
             }
+            // Check if selected meter type matches actual meter type in database
+            const expectedType = meterTypeChoice === '1' ? 'TOKEN' : 'PIPING';
+            if (meter.meterType !== expectedType) {
+                return res.send('END Invalid Meter ID. Please check the code and try again.');
+            }
             // Step 3: Select Amount (Pricing Menu)
             if (parts.length === 3) {
                 // Fetch predefined gas pricing plans from database

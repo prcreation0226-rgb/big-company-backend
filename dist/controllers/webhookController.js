@@ -312,14 +312,31 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                             if (rp)
                                 retailerId = rp.id;
                         }
-                        // Update corresponding GasTopup status to completed
-                        yield prisma_1.default.gasTopup.updateMany({
-                            where: { orderId: String(txRecord.id) },
-                            data: {
-                                status: 'completed',
-                                units: Number(apiResult.units) || totalVolume
-                            }
+                        // Update corresponding GasTopup status to completed or create if not exists (USSD flow)
+                        const existingTopup = yield prisma_1.default.gasTopup.findFirst({
+                            where: { orderId: String(txRecord.id) }
                         });
+                        if (existingTopup) {
+                            yield prisma_1.default.gasTopup.update({
+                                where: { id: existingTopup.id },
+                                data: {
+                                    status: 'completed',
+                                    units: Number(apiResult.units) || totalVolume
+                                }
+                            });
+                        }
+                        else if (txRecord.customerId && meter) {
+                            yield prisma_1.default.gasTopup.create({
+                                data: {
+                                    consumerId: txRecord.customerId,
+                                    meterId: meter.id,
+                                    amount: txRecord.amount,
+                                    units: Number(apiResult.units) || totalVolume,
+                                    status: 'completed',
+                                    orderId: String(txRecord.id)
+                                }
+                            });
+                        }
                         // Update GasMeter currentUnits
                         if (meter) {
                             yield prisma_1.default.gasMeter.update({
