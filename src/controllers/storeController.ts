@@ -22,8 +22,8 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
 
   log('--- createOrder entered ---');
   try {
-    const { retailerId, items, paymentMethod, total, applyRewardGas, rewardGasAmount, meterId, gasRewardWalletId, phone } = req.body;
-    log(`Body parsed: ${JSON.stringify({ retailerId, paymentMethod, total, phone })}`);
+    const { retailerId, items, paymentMethod, total, applyRewardGas, rewardGasAmount, meterId, gasRewardWalletId, phone, phoneNumber, mobileNumber } = req.body;
+    log(`Body parsed: ${JSON.stringify({ retailerId, paymentMethod, total, phone, phoneNumber, mobileNumber })}`);
 
     const userId = req.user!.id;
     log(`User ID from req: ${userId}`);
@@ -51,7 +51,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
       const ordRef = `ORD-${Date.now()}`;
       const pmResult = await palmKash.initiatePayment({
         amount: total,
-        phoneNumber: phone || (consumerProfile as any).user?.phone || '',
+        phoneNumber: phone || phoneNumber || mobileNumber || (consumerProfile as any).user?.phone || '',
         referenceId: ordRef,
         description: `Retail Order Payment`
       });

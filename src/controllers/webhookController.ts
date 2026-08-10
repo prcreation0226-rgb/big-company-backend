@@ -287,6 +287,27 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                         if (rp) retailerId = rp.id;
                     }
 
+                    // Update corresponding GasTopup status to completed
+                    await prisma.gasTopup.updateMany({
+                        where: { orderId: String(txRecord.id) },
+                        data: {
+                            status: 'completed',
+                            units: Number(apiResult.units) || totalVolume
+                        }
+                    });
+
+                    // Update GasMeter currentUnits
+                    if (meter) {
+                        await prisma.gasMeter.update({
+                            where: { id: meter.id },
+                            data: {
+                                currentUnits: {
+                                    increment: Number(apiResult.units) || totalVolume
+                                }
+                            }
+                        });
+                    }
+
                     await prisma.sale.create({
                         data: {
                             consumerId: txRecord.customerId || undefined,
@@ -294,14 +315,7 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                             totalAmount: txRecord.amount,
                             status: 'completed',
                             paymentMethod: txRecord.paymentMethod,
-                            meterId: txRecord.meterNumber,
-                            saleItems: {
-                                create: [{
-                                    productId: 1, 
-                                    quantity: totalVolume,
-                                    price: gasPrice
-                                }]
-                            }
+                            meterId: txRecord.meterNumber
                         }
                     });
 
