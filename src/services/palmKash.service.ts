@@ -296,13 +296,13 @@ class PalmKashService {
         merchant_id: this.clientId,
         client_reference: params.referenceId,
         phone_number: phone,
-        currency: 'RWF',
-        amount: params.amount,
-        callback_url: callbackUrl,
+        customer_name:
+          params.customerName || 'Valued Customer',
         customer_email:
           params.customerEmail || 'customer@big.co.rw',
-        customer_name:
-          params.customerName || 'Valued Customer'
+        amount: params.amount,
+        callback_url: callbackUrl,
+        currency: 'RWF'
       };
 
       /*
@@ -480,9 +480,11 @@ class PalmKashService {
       );
 
       const isCloudflareResponse =
-        headers.server?.toLowerCase().includes('cloudflare') ||
-        Boolean(headers['cf-ray']) ||
-        Boolean(headers['cf-mitigated']);
+        !contentType.includes('application/json') && (
+          headers.server?.toLowerCase().includes('cloudflare') ||
+          Boolean(headers['cf-ray']) ||
+          Boolean(headers['cf-mitigated'])
+        );
 
       return {
         success: false,
