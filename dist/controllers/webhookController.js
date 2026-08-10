@@ -312,6 +312,25 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                             if (rp)
                                 retailerId = rp.id;
                         }
+                        // Update corresponding GasTopup status to completed
+                        yield prisma_1.default.gasTopup.updateMany({
+                            where: { orderId: String(txRecord.id) },
+                            data: {
+                                status: 'completed',
+                                units: Number(apiResult.units) || totalVolume
+                            }
+                        });
+                        // Update GasMeter currentUnits
+                        if (meter) {
+                            yield prisma_1.default.gasMeter.update({
+                                where: { id: meter.id },
+                                data: {
+                                    currentUnits: {
+                                        increment: Number(apiResult.units) || totalVolume
+                                    }
+                                }
+                            });
+                        }
                         yield prisma_1.default.sale.create({
                             data: {
                                 consumerId: txRecord.customerId || undefined,
@@ -319,14 +338,7 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                                 totalAmount: txRecord.amount,
                                 status: 'completed',
                                 paymentMethod: txRecord.paymentMethod,
-                                meterId: txRecord.meterNumber,
-                                saleItems: {
-                                    create: [{
-                                            productId: 1,
-                                            quantity: totalVolume,
-                                            price: gasPrice
-                                        }]
-                                }
+                                meterId: txRecord.meterNumber
                             }
                         });
                         try {

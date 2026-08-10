@@ -272,37 +272,56 @@ class PalmKashService {
                 const timestamp = Math.floor(Date.now() / 1000).toString();
                 const payload = `${timestamp}.${bodyString}`;
                 const signature = crypto_1.default
-                    .createHmac('sha256', Buffer.from(this.clientId.trim(), 'utf8'))
+                    .createHmac('sha256', Buffer.from(this.secretKey.trim(), 'utf8'))
                     .update(Buffer.from(payload, 'utf8'))
                     .digest('hex');
-                const response = yield axios_1.default.post(url, bodyString, {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Accept: 'application/json',
-                        Authorization: `Bearer ${this.secretKey}`,
-                        'X-Merchant-Key': this.clientId,
-                        'X-Timestamp': timestamp,
-                        'X-Signature': signature,
-                        /*
-                         * PalmKash Swagger currently marks these headers as required,
-                         * so retain them until PalmKash confirms otherwise.
-                         */
-                        'X-Frame-Options': 'DENY',
-                        'X-Content-Type-Options': 'nosniff',
-                        'Referrer-Policy': 'no-referrer',
-                        'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload',
-                        /*
-                         * A descriptive server User-Agent can help PalmKash identify
-                         * and allow legitimate API traffic.
-                         */
-                        'User-Agent': 'BigCompanyBackend/1.0'
-                    },
-                    timeout: 10000,
-                    // Allows us to inspect 4xx responses without throwing.
-                    validateStatus: status => status < 500,
-                    // Prevent Axios from serializing the already serialized body again.
-                    transformRequest: [data => data]
-                });
+                let response;
+                const maxAttempts = 3;
+                let lastError = null;
+                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                    try {
+                        console.log(`[PalmKash] Sending payment request (Attempt ${attempt}/${maxAttempts})...`);
+                        response = yield axios_1.default.post(url, bodyString, {
+                            headers: {
+                                'Content-Type': 'application/json',
+                                Accept: 'application/json',
+                                Authorization: `Bearer ${this.secretKey}`,
+                                'X-Merchant-Key': this.clientId,
+                                'X-Timestamp': timestamp,
+                                'X-Signature': signature,
+                                /*
+                                 * PalmKash Swagger currently marks these headers as required,
+                                 * so retain them until PalmKash confirms otherwise.
+                                 */
+                                'X-Frame-Options': 'DENY',
+                                'X-Content-Type-Options': 'nosniff',
+                                'Referrer-Policy': 'no-referrer',
+                                'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload',
+                                /*
+                                 * A descriptive server User-Agent can help PalmKash identify
+                                 * and allow legitimate API traffic.
+                                 */
+                                'User-Agent': 'BigCompanyBackend/1.0'
+                            },
+                            timeout: 10000,
+                            // Allows us to inspect 4xx responses without throwing.
+                            validateStatus: status => status < 500,
+                            // Prevent Axios from serializing the already serialized body again.
+                            transformRequest: [data => data]
+                        });
+                        break;
+                    }
+                    catch (err) {
+                        console.warn(`[PalmKash] Payment request attempt ${attempt} failed:`, err.message);
+                        lastError = err;
+                        if (attempt < maxAttempts) {
+                            yield new Promise(resolve => setTimeout(resolve, 1000));
+                        }
+                    }
+                }
+                if (!response) {
+                    throw lastError || new Error('Failed to reach PalmKash after multiple attempts');
+                }
                 const contentType = String(response.headers['content-type'] || '').toLowerCase();
                 const cloudflareDetails = {
                     status: response.status,

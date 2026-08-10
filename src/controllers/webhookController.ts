@@ -532,10 +532,10 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
            
            await prisma.$transaction(async (tx) => {
                 // 1. Update status
-                await tx.sale.update({
-                    where: { id: sale.id },
-                    data: { status: 'pending' }
-                });
+                 await tx.sale.update({
+                     where: { id: sale.id },
+                     data: { status: activeReference.startsWith('POS-') ? 'completed' : 'pending' }
+                 });
 
                // 2. Decrement Stock
                for (const item of sale.saleItems) {

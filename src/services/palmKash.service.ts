@@ -317,7 +317,7 @@ class PalmKashService {
       const signature = crypto
         .createHmac(
           'sha256',
-          Buffer.from(this.secretKey.trim(), 'utf8')
+          Buffer.from(this.clientId.trim(), 'utf8')
         )
         .update(Buffer.from(payload, 'utf8'))
         .digest('hex');

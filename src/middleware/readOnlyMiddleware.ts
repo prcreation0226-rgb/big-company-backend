@@ -71,8 +71,8 @@ export const enforceReadOnly = (req: AuthRequest, res: Response, next: NextFunct
   }
 
   if (isReadOnlyEndpoint && isWriteOperation && req.user?.role === 'admin') {
-    // Allow account creation (POST) and deletion (DELETE) for customers, retailers, and wholesalers
-    const isAccountManagement = (req.method === 'DELETE' || req.method === 'POST') && (
+    // Allow account creation (POST), update (PUT), and deletion (DELETE) for customers, retailers, and wholesalers
+    const isAccountManagement = (req.method === 'DELETE' || req.method === 'POST' || req.method === 'PUT') && (
       fullPath.includes('/customers') || 
       fullPath.includes('/retailers') || 
       fullPath.includes('/wholesalers')

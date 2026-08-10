@@ -67,8 +67,8 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
     const log = (msg) => fs.appendFileSync(logPath, `[DEBUG] ${msg}\n`);
     log('--- createOrder entered ---');
     try {
-        const { retailerId, items, paymentMethod, total, applyRewardGas, rewardGasAmount, meterId, gasRewardWalletId, phone } = req.body;
-        log(`Body parsed: ${JSON.stringify({ retailerId, paymentMethod, total, phone })}`);
+        const { retailerId, items, paymentMethod, total, applyRewardGas, rewardGasAmount, meterId, gasRewardWalletId, phone, phoneNumber, mobileNumber } = req.body;
+        log(`Body parsed: ${JSON.stringify({ retailerId, paymentMethod, total, phone, phoneNumber, mobileNumber })}`);
         const userId = req.user.id;
         log(`User ID from req: ${userId}`);
         log('Fetching consumer profile...');
@@ -91,7 +91,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             const ordRef = `ORD-${Date.now()}`;
             const pmResult = yield palmKash.initiatePayment({
                 amount: total,
-                phoneNumber: phone || ((_a = consumerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || '',
+                phoneNumber: phone || phoneNumber || mobileNumber || ((_a = consumerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || '',
                 referenceId: ordRef,
                 description: `Retail Order Payment`
             });

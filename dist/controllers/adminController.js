@@ -500,9 +500,14 @@ const getCustomers = (req, res) => __awaiter(void 0, void 0, void 0, function* (
                 user: true,
                 wallets: true,
                 gasRewards: true,
+                linkedRetailer: true,
                 sales: {
                     include: {
-                        saleItems: true
+                        saleItems: {
+                            include: {
+                                product: true
+                            }
+                        }
                     }
                 },
                 gasTopups: {
@@ -519,13 +524,18 @@ const getCustomers = (req, res) => __awaiter(void 0, void 0, void 0, function* (
         const retailerMap = new Map(retailerProfiles.map(rp => [rp.id, rp]));
         const formattedCustomers = customers.map(customer => {
             const activeSales = customer.sales.filter(sale => {
+                var _a;
                 // Exclude gas top-up purchases (which have no saleItems)
                 if (!sale.saleItems || sale.saleItems.length === 0) {
                     return false;
                 }
-                // Exclude sales before the retailer's lastSettlementDate
-                const retailer = retailerMap.get(sale.retailerId);
-                const settlementDate = retailer === null || retailer === void 0 ? void 0 : retailer.lastSettlementDate;
+                // Exclude any transaction flagged with a Gas product category
+                const hasGasItem = sale.saleItems.some(item => item.product && ['Gas', 'gas', 'GAS'].includes(item.product.category || ''));
+                if (hasGasItem) {
+                    return false;
+                }
+                // Exclude sales before the customer's linked retailer's lastSettlementDate
+                const settlementDate = (_a = customer.linkedRetailer) === null || _a === void 0 ? void 0 : _a.lastSettlementDate;
                 if (settlementDate) {
                     return new Date(sale.createdAt) >= new Date(settlementDate);
                 }
@@ -541,7 +551,7 @@ const getCustomers = (req, res) => __awaiter(void 0, void 0, void 0, function* (
             const walletBalance = cashWallet ? cashWallet.balance : 0;
             // Calculate gas rewards balance dynamically (convert to points where 1 m3 = 100 points for frontend rendering)
             const rewardsPoints = totalGasRewards * 100;
-            return Object.assign(Object.assign({}, customer), { walletBalance,
+            return Object.assign(Object.assign({}, customer), { email: customer.user.email, phone: customer.user.phone, name: customer.fullName || customer.user.name, walletBalance,
                 rewardsPoints,
                 orderCount,
                 totalSpent,

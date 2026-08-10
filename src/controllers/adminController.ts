@@ -493,9 +493,14 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
         user: true,
         wallets: true,
         gasRewards: true,
+        linkedRetailer: true,
         sales: {
           include: {
-            saleItems: true
+            saleItems: {
+              include: {
+                product: true
+              }
+            }
           }
         },
         gasTopups: {
@@ -519,9 +524,16 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
           return false;
         }
 
-        // Exclude sales before the retailer's lastSettlementDate
-        const retailer = retailerMap.get(sale.retailerId);
-        const settlementDate = retailer?.lastSettlementDate;
+        // Exclude any transaction flagged with a Gas product category
+        const hasGasItem = sale.saleItems.some(item => 
+          item.product && ['Gas', 'gas', 'GAS'].includes(item.product.category || '')
+        );
+        if (hasGasItem) {
+          return false;
+        }
+
+        // Exclude sales before the customer's linked retailer's lastSettlementDate
+        const settlementDate = customer.linkedRetailer?.lastSettlementDate;
         if (settlementDate) {
           return new Date(sale.createdAt) >= new Date(settlementDate);
         }
@@ -544,6 +556,9 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
 
       return {
         ...customer,
+        email: customer.user.email,
+        phone: customer.user.phone,
+        name: customer.fullName || customer.user.name,
         walletBalance,
         rewardsPoints,
         orderCount,

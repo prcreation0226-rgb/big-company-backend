@@ -58,8 +58,8 @@ const enforceReadOnly = (req, res, next) => {
         return next();
     }
     if (isReadOnlyEndpoint && isWriteOperation && ((_c = req.user) === null || _c === void 0 ? void 0 : _c.role) === 'admin') {
-        // Allow account creation (POST) and deletion (DELETE) for customers, retailers, and wholesalers
-        const isAccountManagement = (req.method === 'DELETE' || req.method === 'POST') && (fullPath.includes('/customers') ||
+        // Allow account creation (POST), update (PUT), and deletion (DELETE) for customers, retailers, and wholesalers
+        const isAccountManagement = (req.method === 'DELETE' || req.method === 'POST' || req.method === 'PUT') && (fullPath.includes('/customers') ||
             fullPath.includes('/retailers') ||
             fullPath.includes('/wholesalers'));
         if (!isAccountManagement) {

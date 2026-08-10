@@ -36,6 +36,36 @@ function normalizePhoneNumber(phone) {
     return cleaned;
 }
 /**
+ * Helper to find NFC card supporting friendly suffix lookup or direct UID lookup.
+ */
+function findNfcCard(cardNumInput) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const cleaned = cardNumInput.trim().toUpperCase().replace(/:/g, '');
+        // 1. Direct search by uid (exactly as is)
+        let card = yield prisma_1.default.nfcCard.findFirst({
+            where: { uid: cardNumInput.trim() }
+        });
+        if (card)
+            return card;
+        // 2. Query all cards and find by cleaned/friendly match
+        const cards = yield prisma_1.default.nfcCard.findMany();
+        card = cards.find(c => {
+            const dbCleaned = c.uid.toUpperCase().replace(/:/g, '');
+            if (dbCleaned === cleaned)
+                return true;
+            if (cleaned.startsWith('NFC-')) {
+                const suffix = cleaned.substring(4);
+                return dbCleaned.endsWith(suffix);
+            }
+            if (cleaned.length === 4) {
+                return dbCleaned.endsWith(cleaned);
+            }
+            return false;
+        });
+        return card || null;
+    });
+}
+/**
  * Main stateless USSD handler.
  * POST /api/ussd
  * Body: { sessionId, phoneNumber, serviceCode, text }
@@ -226,9 +256,7 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
                 const confirmVal = parts[8];
                 if (confirmVal === '1') {
                     // Authenticate Card Number and PIN
-                    const card = yield prisma_1.default.nfcCard.findFirst({
-                        where: { uid: cardNum }
-                    });
+                    const card = yield findNfcCard(cardNum);
                     if (!card || card.pin !== cardPin) {
                         return res.send('END Access denied.');
                     }
@@ -313,9 +341,7 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
             }
             const cardNum = parts[1];
             // Validate Card Number is active and exists
-            const card = yield prisma_1.default.nfcCard.findFirst({
-                where: { uid: cardNum }
-            });
+            const card = yield findNfcCard(cardNum);
             if (!card || card.status !== 'active') {
                 return res.send('END Error: Card is invalid or inactive.');
             }
@@ -484,6 +510,16 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
                 return res.send('CON Enter Meter ID:');
             }
             const meterId = parts[3];
+            // Validate target meter ID exists and matches the selected type
+            const targetMeter = yield prisma_1.default.gasMeter.findFirst({
+                where: { meterNumber: meterId }
+            });
+            if (!targetMeter) {
+                return res.send('END Invalid Meter ID. Please check the code and try again.');
+            }
+            if (targetMeter.meterType !== meterType) {
+                return res.send(`END Error: Meter ID matches a ${targetMeter.meterType} meter, but you selected ${meterType}.`);
+            }
             if (parts.length === 4) {
                 return res.send('CON Enter Units:');
             }
@@ -519,6 +555,28 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
                         }
                     })
                 ]);
+                // Trigger Gas recharge action on the physical meter
+                try {
+                    if (meterType === 'TOKEN') {
+                        yield tokenMeter_service_1.default.rechargeTokenMeter({
+                            meterNumber: meterId,
+                            amount: unitsValue,
+                            isVendByUnit: true,
+                            customerRef: `GASRCH-SHARE-${meterId}-${Date.now()}`
+                        });
+                    }
+                    else {
+                        yield pipingMeter_service_1.default.rechargePipingMeter({
+                            meterNumber: meterId,
+                            amount: unitsValue,
+                            isVendByUnit: true,
+                            customerRef: `GASRCH-SHARE-${meterId}-${Date.now()}`
+                        });
+                    }
+                }
+                catch (rechargeErr) {
+                    console.error('Failed to trigger physical meter recharge for shared rewards:', rechargeErr);
+                }
                 const smsMessage = `You have received ${unitsValue} m3 of gas shared to Meter ${meterId} from Reward Wallet ${rewardWalletId}. Thank you!`;
                 yield sms_service_1.SMSService.sendSMS(normalizedSMSPhone, smsMessage, 'USSD-SHARE-REWARDS-SMS');
                 return res.send('END You have shared your gas rewards Successfully');
@@ -539,9 +597,7 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
                 return res.send('CON Enter Card PIN:');
             }
             const cardPin = parts[2];
-            const card = yield prisma_1.default.nfcCard.findFirst({
-                where: { uid: cardNum }
-            });
+            const card = yield findNfcCard(cardNum);
             if (!card || card.pin !== cardPin) {
                 return res.send('END Access denied.');
             }
@@ -791,11 +847,11 @@ const handleUSSDRequest = (req, res) => __awaiter(void 0, void 0, void 0, functi
             let displayMessage = responseString;
             if (responseString.startsWith('CON ')) {
                 freeflowState = 'FC';
-                displayMessage = responseString.substring(4);
+                displayMessage = responseString;
             }
             else if (responseString.startsWith('END ')) {
                 freeflowState = 'FB';
-                displayMessage = responseString.substring(4);
+                displayMessage = responseString;
                 yield prisma_1.default.ussdSession.deleteMany({ where: { sessionId: airtelSessionId } });
             }
             // Set Airtel headers
