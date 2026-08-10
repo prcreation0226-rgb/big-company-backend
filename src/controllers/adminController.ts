@@ -194,14 +194,11 @@ export const getDashboard = async (req: AuthRequest, res: Response) => {
     );
 
     // Recent Activity - Merge Sales, New Customers, Loans, and Gas Topups
-    const [recentSales, recentConsumers, recentLoans, recentGas] = await Promise.all([
+    const [recentSalesRaw, recentConsumers, recentLoansRaw, recentGasRaw] = await Promise.all([
       prisma.sale.findMany({
         take: 5,
         orderBy: { createdAt: 'desc' },
-        where: { saleItems: { some: {} } },
-        include: {
-          consumerProfile: { select: { fullName: true } }
-        }
+        where: { saleItems: { some: {} } }
       }),
       prisma.consumerProfile.findMany({
         take: 5,
@@ -210,15 +207,40 @@ export const getDashboard = async (req: AuthRequest, res: Response) => {
       }),
       prisma.loan.findMany({
         take: 5,
-        orderBy: { createdAt: 'desc' },
-        include: { consumerProfile: true }
+        orderBy: { createdAt: 'desc' }
       }),
       prisma.gasTopup.findMany({
         take: 5,
-        orderBy: { createdAt: 'desc' },
-        include: { consumerProfile: { select: { fullName: true } } }
+        orderBy: { createdAt: 'desc' }
       })
     ]);
+
+    // Fetch all related consumer profiles in a single query to avoid crashes on inconsistent/orphaned DB records
+    const allConsumerIds = Array.from(new Set([
+      ...recentSalesRaw.map(s => s.consumerId).filter((id): id is number => id !== null && id !== undefined),
+      ...recentLoansRaw.map(l => l.consumerId).filter((id): id is number => id !== null && id !== undefined),
+      ...recentGasRaw.map(g => g.consumerId).filter((id): id is number => id !== null && id !== undefined)
+    ]));
+
+    const matchingConsumers = await prisma.consumerProfile.findMany({
+      where: { id: { in: allConsumerIds } }
+    });
+    const consumerMap = new Map(matchingConsumers.map(c => [c.id, c]));
+
+    const recentSales = recentSalesRaw.map(s => ({
+      ...s,
+      consumerProfile: s.consumerId ? consumerMap.get(s.consumerId) || null : null
+    }));
+
+    const recentLoans = recentLoansRaw.map(l => ({
+      ...l,
+      consumerProfile: l.consumerId ? consumerMap.get(l.consumerId) || null : null
+    }));
+
+    const recentGas = recentGasRaw.map(g => ({
+      ...g,
+      consumerProfile: g.consumerId ? consumerMap.get(g.consumerId) || null : null
+    }));
 
     const activities: any[] = [
       ...recentSales.map(s => ({
@@ -496,11 +518,7 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
         linkedRetailer: true,
         sales: {
           include: {
-            saleItems: {
-              include: {
-                product: true
-              }
-            }
+            saleItems: true
           }
         },
         gasTopups: {
@@ -514,8 +532,18 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
       }
     });
 
-    const retailerProfiles = await prisma.retailerProfile.findMany();
+    const [retailerProfiles, products] = await Promise.all([
+      prisma.retailerProfile.findMany(),
+      prisma.product.findMany()
+    ]);
     const retailerMap = new Map(retailerProfiles.map(rp => [rp.id, rp]));
+
+    // Create a Set of product IDs belonging to Gas category to avoid crash on orphaned products
+    const gasProductIds = new Set(
+      products
+        .filter(p => ['Gas', 'gas', 'GAS'].includes(p.category || ''))
+        .map(p => p.id)
+    );
 
     const formattedCustomers = customers.map(customer => {
       const activeSales = customer.sales.filter(sale => {
@@ -526,7 +554,7 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
 
         // Exclude any transaction flagged with a Gas product category
         const hasGasItem = sale.saleItems.some(item => 
-          item.product && ['Gas', 'gas', 'GAS'].includes(item.product.category || '')
+          gasProductIds.has(item.productId)
         );
         if (hasGasItem) {
           return false;

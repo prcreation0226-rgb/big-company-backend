@@ -208,14 +208,11 @@ const getDashboard = (req, res) => __awaiter(void 0, void 0, void 0, function* (
             return sum;
         }, 0));
         // Recent Activity - Merge Sales, New Customers, Loans, and Gas Topups
-        const [recentSales, recentConsumers, recentLoans, recentGas] = yield Promise.all([
+        const [recentSalesRaw, recentConsumers, recentLoansRaw, recentGasRaw] = yield Promise.all([
             prisma_1.default.sale.findMany({
                 take: 5,
                 orderBy: { createdAt: 'desc' },
-                where: { saleItems: { some: {} } },
-                include: {
-                    consumerProfile: { select: { fullName: true } }
-                }
+                where: { saleItems: { some: {} } }
             }),
             prisma_1.default.consumerProfile.findMany({
                 take: 5,
@@ -224,15 +221,26 @@ const getDashboard = (req, res) => __awaiter(void 0, void 0, void 0, function* (
             }),
             prisma_1.default.loan.findMany({
                 take: 5,
-                orderBy: { createdAt: 'desc' },
-                include: { consumerProfile: true }
+                orderBy: { createdAt: 'desc' }
             }),
             prisma_1.default.gasTopup.findMany({
                 take: 5,
-                orderBy: { createdAt: 'desc' },
-                include: { consumerProfile: { select: { fullName: true } } }
+                orderBy: { createdAt: 'desc' }
             })
         ]);
+        // Fetch all related consumer profiles in a single query to avoid crashes on inconsistent/orphaned DB records
+        const allConsumerIds = Array.from(new Set([
+            ...recentSalesRaw.map(s => s.customerId).filter((id) => id !== null && id !== undefined),
+            ...recentLoansRaw.map(l => l.consumerId).filter((id) => id !== null && id !== undefined),
+            ...recentGasRaw.map(g => g.consumerId).filter((id) => id !== null && id !== undefined)
+        ]));
+        const matchingConsumers = yield prisma_1.default.consumerProfile.findMany({
+            where: { id: { in: allConsumerIds } }
+        });
+        const consumerMap = new Map(matchingConsumers.map(c => [c.id, c]));
+        const recentSales = recentSalesRaw.map(s => (Object.assign(Object.assign({}, s), { consumerProfile: s.customerId ? consumerMap.get(s.customerId) || null : null })));
+        const recentLoans = recentLoansRaw.map(l => (Object.assign(Object.assign({}, l), { consumerProfile: l.consumerId ? consumerMap.get(l.consumerId) || null : null })));
+        const recentGas = recentGasRaw.map(g => (Object.assign(Object.assign({}, g), { consumerProfile: g.consumerId ? consumerMap.get(g.consumerId) || null : null })));
         const activities = [
             ...recentSales.map(s => {
                 var _a;
@@ -503,11 +511,7 @@ const getCustomers = (req, res) => __awaiter(void 0, void 0, void 0, function* (
                 linkedRetailer: true,
                 sales: {
                     include: {
-                        saleItems: {
-                            include: {
-                                product: true
-                            }
-                        }
+                        saleItems: true
                     }
                 },
                 gasTopups: {
@@ -520,8 +524,15 @@ const getCustomers = (req, res) => __awaiter(void 0, void 0, void 0, function* (
                 }
             }
         });
-        const retailerProfiles = yield prisma_1.default.retailerProfile.findMany();
+        const [retailerProfiles, products] = yield Promise.all([
+            prisma_1.default.retailerProfile.findMany(),
+            prisma_1.default.product.findMany()
+        ]);
         const retailerMap = new Map(retailerProfiles.map(rp => [rp.id, rp]));
+        // Create a Set of product IDs belonging to Gas category to avoid crash on orphaned products
+        const gasProductIds = new Set(products
+            .filter(p => ['Gas', 'gas', 'GAS'].includes(p.category || ''))
+            .map(p => p.id));
         const formattedCustomers = customers.map(customer => {
             const activeSales = customer.sales.filter(sale => {
                 var _a;
@@ -530,7 +541,7 @@ const getCustomers = (req, res) => __awaiter(void 0, void 0, void 0, function* (
                     return false;
                 }
                 // Exclude any transaction flagged with a Gas product category
-                const hasGasItem = sale.saleItems.some(item => item.product && ['Gas', 'gas', 'GAS'].includes(item.product.category || ''));
+                const hasGasItem = sale.saleItems.some(item => gasProductIds.has(item.productId));
                 if (hasGasItem) {
                     return false;
                 }
