@@ -69,6 +69,44 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
     try {
         const { retailerId, items = [], paymentMethod, total = 0, applyRewardGas, rewardGasAmount, meterId, gasRewardWalletId, phone, phoneNumber, mobileNumber, retailer_email } = req.body;
         log(`Body parsed: ${JSON.stringify({ retailerId, paymentMethod, total, phone, phoneNumber, mobileNumber, retailer_email })}`);
+        const isUssdCallback = paymentMethod === 'ussd_callback';
+        if (isUssdCallback) {
+            log('Processing USSD Callback Order early...');
+            const retailer = yield prisma_1.default.retailerProfile.findUnique({
+                where: { id: Number(retailerId) },
+                include: { user: true }
+            });
+            if (!retailer) {
+                log('Retailer not found for USSD Callback');
+                return res.status(404).json({ error: 'Retailer not found' });
+            }
+            const sale = yield prisma_1.default.sale.create({
+                data: {
+                    consumerId: null,
+                    retailerId: Number(retailerId),
+                    totalAmount: 0,
+                    status: 'pending',
+                    paymentMethod: 'ussd_callback',
+                    notes: JSON.stringify({ retailer_email, phone: phone || phoneNumber || mobileNumber })
+                }
+            });
+            if ((_a = retailer.user) === null || _a === void 0 ? void 0 : _a.email) {
+                yield email_queue_1.emailQueue.add('order-confirmation', {
+                    to: retailer.user.email,
+                    subject: `✅ New USSD Order Request: #${sale.id}`,
+                    html: `
+            <h3>New USSD Call-back Order Request</h3>
+            <p><strong>Customer Phone Number:</strong> ${phone || phoneNumber || mobileNumber || 'N/A'}</p>
+            <p><strong>Selected Retailer:</strong> ${retailer.shopName || 'Retailer'}</p>
+            <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+            <p>Please call the customer back immediately to finalize their order details.</p>
+          `,
+                    templateType: 'RETAILER_ORDER_CONFIRMATION',
+                    relatedEntity: { type: 'SALE', id: sale.id.toString() }
+                });
+            }
+            return res.status(201).json({ success: true, orderId: sale.id });
+        }
         const userId = req.user.id;
         log(`User ID from req: ${userId}`);
         log('Fetching consumer profile...');
@@ -91,7 +129,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             const ordRef = `ORD-${Date.now()}`;
             const pmResult = yield palmKash.initiatePayment({
                 amount: total,
-                phoneNumber: phone || phoneNumber || mobileNumber || ((_a = consumerProfile.user) === null || _a === void 0 ? void 0 : _a.phone) || '',
+                phoneNumber: phone || phoneNumber || mobileNumber || ((_b = consumerProfile.user) === null || _b === void 0 ? void 0 : _b.phone) || '',
                 referenceId: ordRef,
                 description: `Retail Order Payment`
             });
@@ -115,7 +153,6 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             customerId: consumerProfile.id,
             retailerId: parseInt(retailerId)
         });
-        const isUssdCallback = paymentMethod === 'ussd_callback';
         if (!isUssdCallback) {
             const approvalStatus = yield prisma_1.default.customerLinkRequest.findUnique({
                 where: {
@@ -424,24 +461,6 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                 where: { id: Number(retailerId) },
                 include: { user: true }
             });
-            if (isUssdCallback) {
-                if ((_b = retailer === null || retailer === void 0 ? void 0 : retailer.user) === null || _b === void 0 ? void 0 : _b.email) {
-                    yield email_queue_1.emailQueue.add('order-confirmation', {
-                        to: retailer.user.email,
-                        subject: `✅ New USSD Order Request: #${result.id}`,
-                        html: `
-              <h3>New USSD Call-back Order Request</h3>
-              <p><strong>Customer Phone Number:</strong> ${phone || phoneNumber || mobileNumber || 'N/A'}</p>
-              <p><strong>Selected Retailer:</strong> ${(retailer === null || retailer === void 0 ? void 0 : retailer.shopName) || 'Retailer'}</p>
-              <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
-              <p>Please call the customer back immediately to finalize their order details.</p>
-            `,
-                        templateType: 'RETAILER_ORDER_CONFIRMATION',
-                        relatedEntity: { type: 'SALE', id: result.id.toString() }
-                    });
-                }
-                return res.status(201).json({ success: true, orderId: result.id });
-            }
             // 1. Notify Retailer of Low Stock for any items in the order
             const orderedProducts = yield prisma_1.default.product.findMany({
                 where: { id: { in: items.map((i) => i.productId) } },

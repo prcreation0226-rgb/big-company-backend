@@ -25,6 +25,47 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
     const { retailerId, items = [], paymentMethod, total = 0, applyRewardGas, rewardGasAmount, meterId, gasRewardWalletId, phone, phoneNumber, mobileNumber, retailer_email } = req.body;
     log(`Body parsed: ${JSON.stringify({ retailerId, paymentMethod, total, phone, phoneNumber, mobileNumber, retailer_email })}`);
 
+    const isUssdCallback = paymentMethod === 'ussd_callback';
+    if (isUssdCallback) {
+      log('Processing USSD Callback Order early...');
+      const retailer = await prisma.retailerProfile.findUnique({
+        where: { id: Number(retailerId) },
+        include: { user: true }
+      });
+      if (!retailer) {
+        log('Retailer not found for USSD Callback');
+        return res.status(404).json({ error: 'Retailer not found' });
+      }
+
+      const sale = await prisma.sale.create({
+        data: {
+          consumerId: null,
+          retailerId: Number(retailerId),
+          totalAmount: 0,
+          status: 'pending',
+          paymentMethod: 'ussd_callback',
+          notes: JSON.stringify({ retailer_email, phone: phone || phoneNumber || mobileNumber })
+        }
+      });
+
+      if (retailer.user?.email) {
+        await emailQueue.add('order-confirmation', {
+          to: retailer.user.email,
+          subject: `✅ New USSD Order Request: #${sale.id}`,
+          html: `
+            <h3>New USSD Call-back Order Request</h3>
+            <p><strong>Customer Phone Number:</strong> ${phone || phoneNumber || mobileNumber || 'N/A'}</p>
+            <p><strong>Selected Retailer:</strong> ${retailer.shopName || 'Retailer'}</p>
+            <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+            <p>Please call the customer back immediately to finalize their order details.</p>
+          `,
+          templateType: 'RETAILER_ORDER_CONFIRMATION',
+          relatedEntity: { type: 'SALE', id: sale.id.toString() }
+        });
+      }
+      return res.status(201).json({ success: true, orderId: sale.id });
+    }
+
     const userId = req.user!.id;
     log(`User ID from req: ${userId}`);
 
@@ -78,8 +119,6 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
       customerId: consumerProfile.id,
       retailerId: parseInt(retailerId as any)
     });
-
-    const isUssdCallback = paymentMethod === 'ussd_callback';
 
     if (!isUssdCallback) {
       const approvalStatus = await prisma.customerLinkRequest.findUnique({
@@ -424,24 +463,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
         include: { user: true }
       });
 
-      if (isUssdCallback) {
-        if (retailer?.user?.email) {
-          await emailQueue.add('order-confirmation', {
-            to: retailer.user.email,
-            subject: `✅ New USSD Order Request: #${result.id}`,
-            html: `
-              <h3>New USSD Call-back Order Request</h3>
-              <p><strong>Customer Phone Number:</strong> ${phone || phoneNumber || mobileNumber || 'N/A'}</p>
-              <p><strong>Selected Retailer:</strong> ${retailer?.shopName || 'Retailer'}</p>
-              <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
-              <p>Please call the customer back immediately to finalize their order details.</p>
-            `,
-            templateType: 'RETAILER_ORDER_CONFIRMATION',
-            relatedEntity: { type: 'SALE', id: result.id.toString() }
-          });
-        }
-        return res.status(201).json({ success: true, orderId: result.id });
-      }
+
 
       // 1. Notify Retailer of Low Stock for any items in the order
       const orderedProducts = await prisma.product.findMany({
