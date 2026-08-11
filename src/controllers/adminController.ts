@@ -547,7 +547,10 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
 
     const formattedCustomers = customers.map(customer => {
       const activeSales = customer.sales.filter(sale => {
-        // Exclude gas top-up purchases (which have no saleItems)
+        // Exclude gas top-up purchases (which have no saleItems or have a meterId)
+        if (sale.meterId) {
+          return false;
+        }
         if (!sale.saleItems || sale.saleItems.length === 0) {
           return false;
         }
@@ -560,8 +563,9 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
           return false;
         }
 
-        // Exclude sales before the customer's linked retailer's lastSettlementDate
-        const settlementDate = customer.linkedRetailer?.lastSettlementDate;
+        // Exclude sales before the specific retailer's lastSettlementDate where the sale occurred
+        const saleRetailer = retailerMap.get(sale.retailerId);
+        const settlementDate = saleRetailer?.lastSettlementDate;
         if (settlementDate) {
           return new Date(sale.createdAt) >= new Date(settlementDate);
         }

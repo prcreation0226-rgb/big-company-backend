@@ -40,7 +40,7 @@ function normalizePhoneNumber(phone) {
  */
 function findNfcCard(cardNumInput) {
     return __awaiter(this, void 0, void 0, function* () {
-        const cleaned = cardNumInput.trim().toUpperCase().replace(/:/g, '');
+        const cleaned = cardNumInput.replace(/[\s:]/g, '').toUpperCase();
         // 1. Direct search by uid (exactly as is)
         let card = yield prisma_1.default.nfcCard.findFirst({
             where: { uid: cardNumInput.trim() }
@@ -50,7 +50,7 @@ function findNfcCard(cardNumInput) {
         // 2. Query all cards and find by cleaned/friendly match
         const cards = yield prisma_1.default.nfcCard.findMany();
         card = cards.find(c => {
-            const dbCleaned = c.uid.toUpperCase().replace(/:/g, '');
+            const dbCleaned = c.uid.replace(/[\s:]/g, '').toUpperCase();
             if (dbCleaned === cleaned)
                 return true;
             if (cleaned.startsWith('NFC-')) {
@@ -507,7 +507,7 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
             });
             const rewardBalance = rewards.reduce((sum, r) => sum + r.units, 0);
             if (parts.length === 2) {
-                return res.send('CON Choose Meter Type:\n1. TOKEN\n2. PIPING');
+                return res.send('CON Choose Meter Type:\n1. Zamuka\n2. Tekana');
             }
             const meterTypeChoice = parts[2];
             const meterType = meterTypeChoice === '1' ? 'TOKEN' : 'PIPING';
@@ -523,7 +523,9 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
                 return res.send('END Invalid Meter ID. Please check the code and try again.');
             }
             if (targetMeter.meterType !== meterType) {
-                return res.send(`END Error: Meter ID matches a ${targetMeter.meterType} meter, but you selected ${meterType}.`);
+                const dbLabel = targetMeter.meterType === 'TOKEN' ? 'Zamuka' : 'Tekana';
+                const selectLabel = meterType === 'TOKEN' ? 'Zamuka' : 'Tekana';
+                return res.send(`END Error: Meter ID matches a ${dbLabel} meter, but you selected ${selectLabel}.`);
             }
             if (parts.length === 4) {
                 return res.send('CON Enter Units:');

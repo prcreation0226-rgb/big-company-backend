@@ -535,8 +535,10 @@ const getCustomers = (req, res) => __awaiter(void 0, void 0, void 0, function* (
             .map(p => p.id));
         const formattedCustomers = customers.map(customer => {
             const activeSales = customer.sales.filter(sale => {
-                var _a;
-                // Exclude gas top-up purchases (which have no saleItems)
+                // Exclude gas top-up purchases (which have no saleItems or have a meterId)
+                if (sale.meterId) {
+                    return false;
+                }
                 if (!sale.saleItems || sale.saleItems.length === 0) {
                     return false;
                 }
@@ -545,8 +547,9 @@ const getCustomers = (req, res) => __awaiter(void 0, void 0, void 0, function* (
                 if (hasGasItem) {
                     return false;
                 }
-                // Exclude sales before the customer's linked retailer's lastSettlementDate
-                const settlementDate = (_a = customer.linkedRetailer) === null || _a === void 0 ? void 0 : _a.lastSettlementDate;
+                // Exclude sales before the specific retailer's lastSettlementDate where the sale occurred
+                const saleRetailer = retailerMap.get(sale.retailerId);
+                const settlementDate = saleRetailer === null || saleRetailer === void 0 ? void 0 : saleRetailer.lastSettlementDate;
                 if (settlementDate) {
                     return new Date(sale.createdAt) >= new Date(settlementDate);
                 }

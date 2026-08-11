@@ -25,7 +25,7 @@ function normalizePhoneNumber(phone: string): string {
  * Helper to find NFC card supporting friendly suffix lookup or direct UID lookup.
  */
 async function findNfcCard(cardNumInput: string) {
-  const cleaned = cardNumInput.trim().toUpperCase().replace(/:/g, '');
+  const cleaned = cardNumInput.replace(/[\s:]/g, '').toUpperCase();
   
   // 1. Direct search by uid (exactly as is)
   let card = await prisma.nfcCard.findFirst({
@@ -36,7 +36,7 @@ async function findNfcCard(cardNumInput: string) {
   // 2. Query all cards and find by cleaned/friendly match
   const cards = await prisma.nfcCard.findMany();
   card = cards.find(c => {
-    const dbCleaned = c.uid.toUpperCase().replace(/:/g, '');
+    const dbCleaned = c.uid.replace(/[\s:]/g, '').toUpperCase();
     if (dbCleaned === cleaned) return true;
     if (cleaned.startsWith('NFC-')) {
       const suffix = cleaned.substring(4);
@@ -552,7 +552,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       const rewardBalance = rewards.reduce((sum, r) => sum + r.units, 0);
 
       if (parts.length === 2) {
-        return res.send('CON Choose Meter Type:\n1. TOKEN\n2. PIPING');
+        return res.send('CON Choose Meter Type:\n1. Zamuka\n2. Tekana');
       }
       const meterTypeChoice = parts[2];
       const meterType = meterTypeChoice === '1' ? 'TOKEN' : 'PIPING';
@@ -570,7 +570,9 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         return res.send('END Invalid Meter ID. Please check the code and try again.');
       }
       if (targetMeter.meterType !== meterType) {
-        return res.send(`END Error: Meter ID matches a ${targetMeter.meterType} meter, but you selected ${meterType}.`);
+        const dbLabel = targetMeter.meterType === 'TOKEN' ? 'Zamuka' : 'Tekana';
+        const selectLabel = meterType === 'TOKEN' ? 'Zamuka' : 'Tekana';
+        return res.send(`END Error: Meter ID matches a ${dbLabel} meter, but you selected ${selectLabel}.`);
       }
 
       if (parts.length === 4) {
