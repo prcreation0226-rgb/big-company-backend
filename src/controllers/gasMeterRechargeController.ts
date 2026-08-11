@@ -320,7 +320,7 @@ export const initiateGasMeterRecharge = async (req: AuthRequest, res: Response) 
                         serialNo: matchedMapping.serialNo,
                         meterKey: matchedMapping.meterKey,
                         isGprs: true,
-                        meterType: 'TOKEN',
+                        meterType: 'PIPING',
                         status: 'active'
                     }
                 });

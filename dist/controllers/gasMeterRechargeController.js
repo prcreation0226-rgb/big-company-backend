@@ -323,7 +323,7 @@ const initiateGasMeterRecharge = (req, res) => __awaiter(void 0, void 0, void 0,
                         serialNo: matchedMapping.serialNo,
                         meterKey: matchedMapping.meterKey,
                         isGprs: true,
-                        meterType: 'TOKEN',
+                        meterType: 'PIPING',
                         status: 'active'
                     }
                 });

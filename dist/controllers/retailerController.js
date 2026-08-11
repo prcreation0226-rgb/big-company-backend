@@ -80,14 +80,13 @@ const getDashboardStats = (req, res) => __awaiter(void 0, void 0, void 0, functi
             prisma_1.default.sale.findMany({
                 where: {
                     retailerId: retailerProfile.id,
-                    createdAt: { gte: today, lt: tomorrow },
-                    saleItems: { some: {} }
+                    createdAt: { gte: today, lt: tomorrow }
                 },
                 include: { saleItems: true }
             }),
             // All Sales (for revenue stats)
             prisma_1.default.sale.findMany({
-                where: Object.assign({ retailerId: retailerProfile.id, saleItems: { some: {} } }, (dateFilter ? { createdAt: dateFilter } : {}))
+                where: Object.assign({ retailerId: retailerProfile.id }, (dateFilter ? { createdAt: dateFilter } : {}))
             }),
             prisma_1.default.product.findMany({
                 where: { retailerId: retailerProfile.id, wholesalerId: null }
@@ -113,7 +112,7 @@ const getDashboardStats = (req, res) => __awaiter(void 0, void 0, void 0, functi
         // Calculate Stats
         // DYNAMIC PROFIT CALCULATION (Realized form Sales)
         const sales = yield prisma_1.default.sale.findMany({
-            where: Object.assign({ retailerId: retailerProfile.id, status: { not: 'cancelled' }, saleItems: { some: {} } }, (dateFilter ? { createdAt: dateFilter } : {})),
+            where: Object.assign({ retailerId: retailerProfile.id, status: { not: 'cancelled' } }, (dateFilter ? { createdAt: dateFilter } : {})),
             include: {
                 saleItems: {
                     include: { product: true }

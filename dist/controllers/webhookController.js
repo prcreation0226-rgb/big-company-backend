@@ -268,7 +268,7 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                                         serialNo: matchedMapping.serialNo,
                                         meterKey: matchedMapping.meterKey,
                                         isGprs: true,
-                                        meterType: 'TOKEN',
+                                        meterType: 'PIPING',
                                         status: 'active'
                                     }
                                 });
