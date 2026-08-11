@@ -53,7 +53,7 @@ export const getDashboardStats = async (req: AuthRequest, res: Response) => {
       }),
       // All Sales (for revenue stats)
       prisma.sale.findMany({
-        where: { 
+        where: {
           retailerId: retailerProfile.id,
           ...(dateFilter ? { createdAt: dateFilter } : {})
         }
@@ -106,8 +106,8 @@ export const getDashboardStats = async (req: AuthRequest, res: Response) => {
     for (const sale of sales) {
       for (const item of sale.saleItems) {
         const revenue = item.price * item.quantity;
-        const cost = item.product.costPrice && item.product.costPrice > 0 
-          ? item.product.costPrice 
+        const cost = item.product.costPrice && item.product.costPrice > 0
+          ? item.product.costPrice
           : item.price / (1 + retailerMarkup / 100);
         totalRevenue += revenue;
         totalCost += (cost * item.quantity);
@@ -2399,17 +2399,17 @@ export const payCredit = async (req: AuthRequest, res: Response) => {
         });
       }
 
-       // Create a WalletTransaction record for audit
-       const txRecord = await tx.walletTransaction.create({
-         data: {
-           retailerId: retailerProfile.id,
-           type: 'credit_repayment',
-           amount: amount,
-           description: `Credit Repayment via ${paymentMethod}`,
-           reference: `REPAY-${Date.now()}`,
-           status: 'completed'
-         }
-       });
+      // Create a WalletTransaction record for audit
+      const txRecord = await tx.walletTransaction.create({
+        data: {
+          retailerId: retailerProfile.id,
+          type: 'credit_repayment',
+          amount: amount,
+          description: `Credit Repayment via ${paymentMethod}`,
+          reference: `REPAY-${Date.now()}`,
+          status: 'completed'
+        }
+      });
 
       // Notify Retailer (RET-EMAIL-010)
       if (retailerProfile.user?.email) {

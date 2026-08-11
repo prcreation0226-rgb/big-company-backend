@@ -804,13 +804,13 @@ model CustomerLinkRequest {
 }
 
 model SaleItem {
-  id        Int     @id @default(autoincrement())
+  id        Int      @id @default(autoincrement())
   saleId    Int
-  productId Int
+  productId Int?
   quantity  Float
   price     Float
-  product   Product @relation(fields: [productId], references: [id], onDelete: NoAction, map: "SaleItem_productId_fkey")
-  sale      Sale    @relation(fields: [saleId], references: [id], onDelete: NoAction, map: "SaleItem_saleId_fkey")
+  product   Product? @relation(fields: [productId], references: [id], onDelete: SetNull, map: "SaleItem_productId_fkey")
+  sale      Sale     @relation(fields: [saleId], references: [id], onDelete: NoAction, map: "SaleItem_saleId_fkey")
 
   @@index([productId], map: "SaleItem_productId_fkey")
   @@index([saleId], map: "SaleItem_saleId_fkey")

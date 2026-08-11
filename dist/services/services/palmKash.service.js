@@ -386,9 +386,9 @@ class PalmKashService {
                         : (_f = error.response) === null || _f === void 0 ? void 0 : _f.data
                 });
                 yield monitoring_service_1.monitoringService.reportApiFailure('PALMKASH_API', error.message || 'PalmKash connection failed');
-                const isCloudflareResponse = !contentType.includes('application/json') && (((_g = headers.server) === null || _g === void 0 ? void 0 : _g.toLowerCase().includes('cloudflare')) ||
+                const isCloudflareResponse = ((_g = headers.server) === null || _g === void 0 ? void 0 : _g.toLowerCase().includes('cloudflare')) ||
                     Boolean(headers['cf-ray']) ||
-                    Boolean(headers['cf-mitigated']));
+                    Boolean(headers['cf-mitigated']);
                 return {
                     success: false,
                     status: 'FAILED',
