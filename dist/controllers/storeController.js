@@ -59,7 +59,7 @@ const template_service_1 = require("../services/template.service");
 // UPDATED: Reward Gas can now be applied as partial discount during payment
 // REQUIREMENT #3: Customer must be linked to retailer before ordering
 const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g;
     const fs = require('fs');
     const path = require('path');
     const os = require('os');
@@ -67,8 +67,8 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
     const log = (msg) => fs.appendFileSync(logPath, `[DEBUG] ${msg}\n`);
     log('--- createOrder entered ---');
     try {
-        const { retailerId, items, paymentMethod, total, applyRewardGas, rewardGasAmount, meterId, gasRewardWalletId, phone, phoneNumber, mobileNumber } = req.body;
-        log(`Body parsed: ${JSON.stringify({ retailerId, paymentMethod, total, phone, phoneNumber, mobileNumber })}`);
+        const { retailerId, items = [], paymentMethod, total = 0, applyRewardGas, rewardGasAmount, meterId, gasRewardWalletId, phone, phoneNumber, mobileNumber, retailer_email } = req.body;
+        log(`Body parsed: ${JSON.stringify({ retailerId, paymentMethod, total, phone, phoneNumber, mobileNumber, retailer_email })}`);
         const userId = req.user.id;
         log(`User ID from req: ${userId}`);
         log('Fetching consumer profile...');
@@ -115,25 +115,28 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             customerId: consumerProfile.id,
             retailerId: parseInt(retailerId)
         });
-        const approvalStatus = yield prisma_1.default.customerLinkRequest.findUnique({
-            where: {
-                customerId_retailerId: {
-                    customerId: consumerProfile.id,
-                    retailerId: parseInt(retailerId)
+        const isUssdCallback = paymentMethod === 'ussd_callback';
+        if (!isUssdCallback) {
+            const approvalStatus = yield prisma_1.default.customerLinkRequest.findUnique({
+                where: {
+                    customerId_retailerId: {
+                        customerId: consumerProfile.id,
+                        retailerId: parseInt(retailerId)
+                    }
                 }
-            }
-        });
-        log(`Approval status: ${JSON.stringify(approvalStatus)}`);
-        console.log('🔍 [createOrder] Approval record found:', approvalStatus);
-        if ((!approvalStatus || approvalStatus.status !== 'approved') && process.env.DEV_MODE !== 'true') {
-            return res.status(403).json({
-                success: false,
-                error: 'You must be approved by this retailer before placing orders. Please send a link request and wait for approval.',
-                requiresLinking: true,
-                requestStatus: (approvalStatus === null || approvalStatus === void 0 ? void 0 : approvalStatus.status) || null
             });
+            log(`Approval status: ${JSON.stringify(approvalStatus)}`);
+            console.log('🔍 [createOrder] Approval record found:', approvalStatus);
+            if ((!approvalStatus || approvalStatus.status !== 'approved') && process.env.DEV_MODE !== 'true') {
+                return res.status(403).json({
+                    success: false,
+                    error: 'You must be approved by this retailer before placing orders. Please send a link request and wait for approval.',
+                    requiresLinking: true,
+                    requestStatus: (approvalStatus === null || approvalStatus === void 0 ? void 0 : approvalStatus.status) || null
+                });
+            }
         }
-        if (!items || items.length === 0) {
+        if (!isUssdCallback && (!items || items.length === 0)) {
             return res.status(400).json({ error: 'Order must contain items' });
         }
         log('Validating rewards...');
@@ -318,22 +321,24 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             // Mobile money is handled externally / async usually, but here we assume confirmed status or synchronous simulation for POS
             // 3. Validate and Decrement Stock
             console.log('Validating stock...');
-            const productIds = items.map((item) => Number(item.productId));
-            const dbProducts = yield tx.product.findMany({
-                where: { id: { in: productIds } }
-            });
-            const productMap = new Map(dbProducts.map(p => [p.id, p]));
-            for (const item of items) {
-                const product = productMap.get(Number(item.productId));
-                if (!product) {
-                    throw new Error(`Product not found: ID ${item.productId}`);
-                }
-                if (product.stock < item.quantity || product.stock <= 0) {
-                    throw new Error(`Insufficient stock for product: ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
+            if (!isUssdCallback) {
+                const productIds = items.map((item) => Number(item.productId));
+                const dbProducts = yield tx.product.findMany({
+                    where: { id: { in: productIds } }
+                });
+                const productMap = new Map(dbProducts.map(p => [p.id, p]));
+                for (const item of items) {
+                    const product = productMap.get(Number(item.productId));
+                    if (!product) {
+                        throw new Error(`Product not found: ID ${item.productId}`);
+                    }
+                    if (product.stock < item.quantity || product.stock <= 0) {
+                        throw new Error(`Insufficient stock for product: ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
+                    }
                 }
             }
             const isMobileMoney = paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel';
-            if (!isMobileMoney) {
+            if (!isMobileMoney && !isUssdCallback) {
                 console.log('Decrementing stock...');
                 for (const item of items) {
                     yield tx.product.update({
@@ -353,19 +358,19 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                     paymentMethod: paymentMethod,
                     // Store external PalmKash reference or legacy meterId
                     meterId: (externalRef || meterId || null),
-                    notes: isMobileMoney ? JSON.stringify({ gasRewardWalletId: targetRewardId, rewardConsumerId: rewardConsumerId }) : null,
+                    notes: isUssdCallback ? JSON.stringify({ retailer_email }) : (isMobileMoney ? JSON.stringify({ gasRewardWalletId: targetRewardId, rewardConsumerId: rewardConsumerId }) : null),
                     saleItems: {
-                        create: items.map((item) => ({
+                        create: items && items.length > 0 ? items.map((item) => ({
                             productId: item.productId,
                             quantity: item.quantity,
                             price: item.price
-                        }))
+                        })) : []
                     }
                 },
                 include: { saleItems: true }
             });
             // 4. CREDIT GAS REWARDS
-            if (shouldCalculateReward && !isMobileMoney) {
+            if (shouldCalculateReward && !isMobileMoney && !isUssdCallback) {
                 console.log('Calculating gas rewards...');
                 // Calculate Profit from items using product costPrice (wholesaler price)
                 const productIds = items.map((item) => Number(item.productId));
@@ -415,6 +420,28 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         });
         // --- Post-Transaction Event Triggers ---
         try {
+            const retailer = yield prisma_1.default.retailerProfile.findUnique({
+                where: { id: Number(retailerId) },
+                include: { user: true }
+            });
+            if (isUssdCallback) {
+                if ((_b = retailer === null || retailer === void 0 ? void 0 : retailer.user) === null || _b === void 0 ? void 0 : _b.email) {
+                    yield email_queue_1.emailQueue.add('order-confirmation', {
+                        to: retailer.user.email,
+                        subject: `✅ New USSD Order Request: #${result.id}`,
+                        html: `
+              <h3>New USSD Call-back Order Request</h3>
+              <p><strong>Customer Phone Number:</strong> ${phone || phoneNumber || mobileNumber || 'N/A'}</p>
+              <p><strong>Selected Retailer:</strong> ${(retailer === null || retailer === void 0 ? void 0 : retailer.shopName) || 'Retailer'}</p>
+              <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+              <p>Please call the customer back immediately to finalize their order details.</p>
+            `,
+                        templateType: 'RETAILER_ORDER_CONFIRMATION',
+                        relatedEntity: { type: 'SALE', id: result.id.toString() }
+                    });
+                }
+                return res.status(201).json({ success: true, orderId: result.id });
+            }
             // 1. Notify Retailer of Low Stock for any items in the order
             const orderedProducts = yield prisma_1.default.product.findMany({
                 where: { id: { in: items.map((i) => i.productId) } },
@@ -422,7 +449,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             });
             for (const product of orderedProducts) {
                 const threshold = product.lowStockThreshold || 10;
-                if (product.stock <= threshold && ((_c = (_b = product.retailerProfile) === null || _b === void 0 ? void 0 : _b.user) === null || _c === void 0 ? void 0 : _c.email)) {
+                if (product.stock <= threshold && ((_d = (_c = product.retailerProfile) === null || _c === void 0 ? void 0 : _c.user) === null || _d === void 0 ? void 0 : _d.email)) {
                     yield email_queue_1.emailQueue.add('low-stock-alert', {
                         to: product.retailerProfile.user.email,
                         templateType: 'low-stock', // Mapped to RET-EMAIL-013
@@ -438,11 +465,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                 }
             }
             // 2. Notify Retailer of New Order
-            const retailer = yield prisma_1.default.retailerProfile.findUnique({
-                where: { id: Number(retailerId) },
-                include: { user: true }
-            });
-            if ((_d = retailer === null || retailer === void 0 ? void 0 : retailer.user) === null || _d === void 0 ? void 0 : _d.email) {
+            if ((_e = retailer === null || retailer === void 0 ? void 0 : retailer.user) === null || _e === void 0 ? void 0 : _e.email) {
                 yield email_queue_1.emailQueue.add('order-confirmation', {
                     to: retailer.user.email,
                     subject: `✅ New Order Received: #${result.id}`,
@@ -467,7 +490,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                             where: { consumerId: result.consumerId }
                         });
                         const totalUnits = allRewards.reduce((sum, r) => sum + r.units, 0);
-                        if ((_e = rewardConsumer.user) === null || _e === void 0 ? void 0 : _e.phone) {
+                        if ((_f = rewardConsumer.user) === null || _f === void 0 ? void 0 : _f.phone) {
                             yield email_queue_1.emailQueue.add('gas-reward-update', {
                                 to: rewardConsumer.user.phone,
                                 templateType: 'gas-reward-update', // Mapped to CUS-SMS-006
@@ -479,7 +502,7 @@ const createOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                                 relatedEntity: { type: 'GAS_REWARD', id: result.id.toString() }
                             });
                         }
-                        if ((_f = rewardConsumer.user) === null || _f === void 0 ? void 0 : _f.email) {
+                        if ((_g = rewardConsumer.user) === null || _g === void 0 ? void 0 : _g.email) {
                             yield email_queue_1.emailQueue.add('customer-reward-update-email', {
                                 to: rewardConsumer.user.email,
                                 templateType: 'customer-reward-update-email', // Mapped to CUS-EMAIL-006

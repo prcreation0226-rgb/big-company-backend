@@ -5,6 +5,7 @@ import { EmailService } from '../services/email.service';
 import tokenMeterService from '../services/tokenMeter.service';
 import pipingMeterService from '../services/pipingMeter.service';
 import paymentService from '../services/palmKash.service';
+import { createOrder } from './storeController';
 
 /**
  * Helper to normalize telephone numbers to 2507XXXXXXXX format for SMS / payments.
@@ -49,6 +50,11 @@ async function findNfcCard(cardNumInput: string) {
   });
 
   return card || null;
+}
+
+function isValidCardFormat(cardNumInput: string): boolean {
+  const cleaned = cardNumInput.replace(/[\s:]/g, '');
+  return /^(NFC-)?[0-9A-Za-z]{4,20}$/.test(cleaned);
 }
 
 /**
@@ -141,6 +147,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         // Fetch predefined gas pricing plans from database
         const pricingPlans = await prisma.gasPricingPlan.findMany({
           where: { isActive: true },
+          orderBy: { amount: 'asc' },
           take: 5
         });
 
@@ -167,6 +174,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       const planIdx = parseInt(parts[3], 10) - 1;
       const pricingPlans = await prisma.gasPricingPlan.findMany({
         where: { isActive: true },
+        orderBy: { amount: 'asc' },
         take: 5
       });
       let selectedAmount = 0;
@@ -241,6 +249,9 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
           return res.send('CON Enter Card Number:');
         }
         const cardNum = parts[5];
+        if (!isValidCardFormat(cardNum)) {
+          return res.send('END Error: Invalid card number format.');
+        }
 
         if (parts.length === 6) {
           return res.send('CON Enter Card PIN:');
@@ -361,6 +372,9 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         return res.send('CON Enter Card Number:');
       }
       const cardNum = parts[1];
+      if (!isValidCardFormat(cardNum)) {
+        return res.send('END Error: Invalid card number format.');
+      }
 
       // Validate Card Number is active and exists
       const card = await findNfcCard(cardNum);
@@ -491,31 +505,31 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
       const confirmVal = parts[5];
       if (confirmVal === '1') {
-        const registeredUser = await prisma.user.findFirst({
-          where: { phone: orderPhone }
-        });
-        const customerName = registeredUser?.name || 'Unregistered Guest';
+        try {
+          const registeredUser = await prisma.user.findFirst({
+            where: { phone: orderPhone }
+          });
 
-        const retailerEmail = selectedRetailer.user?.email;
+          const mockReq = {
+            user: registeredUser ? { id: registeredUser.id, role: registeredUser.role } : undefined,
+            body: {
+              retailerId: selectedRetailer.id,
+              paymentMethod: 'ussd_callback',
+              phone: orderPhone,
+              retailer_email: selectedRetailer.user?.email || ''
+            }
+          } as any;
 
-        if (retailerEmail) {
-          const emailSubject = `New Order Request from USSD Client - ${orderPhone}`;
-          const emailBody = `
-            <h3>New USSD Call-back Order Request</h3>
-            <p><strong>Customer Name:</strong> ${customerName}</p>
-            <p><strong>Customer Phone Number:</strong> ${orderPhone}</p>
-            <p><strong>Selected Retailer:</strong> ${selectedRetailer.shopName}</p>
-            <p><strong>Location:</strong> Province: ${selectedProv}, District: ${selectedDist}</p>
-            <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
-            <p>Please call the customer back immediately to finalize their order details.</p>
-          `;
+          const mockRes = {
+            status: (code: number) => ({
+              json: (data: any) => {}
+            }),
+            json: (data: any) => {}
+          } as any;
 
-          await EmailService.sendEmail(
-            retailerEmail,
-            emailSubject,
-            emailBody,
-            'USSD-ORDER-NOTIFICATION'
-          );
+          await createOrder(mockReq, mockRes);
+        } catch (postErr: any) {
+          console.error('[USSD Order] Failed to execute createOrder internally:', postErr.message);
         }
 
         return res.send('END Thank you. The retailer has been notified and will contact you shortly.');
@@ -606,45 +620,29 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       if (confirmVal === '1') {
         const normalizedSMSPhone = normalizePhoneNumber(smsPhone);
 
-        await prisma.$transaction([
-          prisma.gasReward.create({
-            data: {
-              consumerId: consumer.id,
-              units: -unitsValue,
-              source: 'USSD-Share-Rewards',
-              reference: `SHARE-${meterId}`,
-              meterId: meterId
-            }
-          })
-        ]);
-
-        // Trigger Gas recharge action on the physical meter
         try {
-          if (meterType === 'TOKEN') {
-            await tokenMeterService.rechargeTokenMeter({
-              meterNumber: meterId,
+          const mockReq = {
+            user: { id: consumer.userId, role: 'consumer' },
+            body: {
+              meterId: meterId,
               amount: unitsValue,
-              isVendByUnit: true,
-              customerRef: `GASRCH-SHARE-${meterId}-${Date.now()}`
-            });
-          } else {
-            await pipingMeterService.rechargePipingMeter({
-              meterNumber: meterId,
-              amount: unitsValue,
-              isVendByUnit: true,
-              customerRef: `GASRCH-SHARE-${meterId}-${Date.now()}`
-            });
-          }
-        } catch (rechargeErr) {
-          console.error('Failed to trigger physical meter recharge for shared rewards:', rechargeErr);
-        }
+              meterType: targetMeter.isGprs ? 'GPRS' : 'LORA_NB',
+              phone: normalizedSMSPhone
+            }
+          } as any;
 
-        const smsMessage = `You have received ${unitsValue} m3 of gas shared to Meter ${meterId} from Reward Wallet ${rewardWalletId}. Thank you!`;
-        await SMSService.sendSMS(
-          normalizedSMSPhone,
-          smsMessage,
-          'USSD-SHARE-REWARDS-SMS'
-        );
+          const mockRes = {
+            status: (code: number) => ({
+              json: (data: any) => {}
+            }),
+            json: (data: any) => {}
+          } as any;
+
+          const { sendToMeter } = await import('./rewardsController');
+          await sendToMeter(mockReq, mockRes);
+        } catch (err: any) {
+          console.error('[USSD Reward Share] Failed to execute sendToMeter internally:', err.message);
+        }
 
         return res.send('END You have shared your gas rewards Successfully');
       } else {
@@ -660,6 +658,9 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         return res.send('CON Enter Card Number:');
       }
       const cardNum = parts[1];
+      if (!isValidCardFormat(cardNum)) {
+        return res.send('END Error: Invalid card number format.');
+      }
 
       if (parts.length === 2) {
         return res.send('CON Enter Card PIN:');

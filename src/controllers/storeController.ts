@@ -22,8 +22,8 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
 
   log('--- createOrder entered ---');
   try {
-    const { retailerId, items, paymentMethod, total, applyRewardGas, rewardGasAmount, meterId, gasRewardWalletId, phone, phoneNumber, mobileNumber } = req.body;
-    log(`Body parsed: ${JSON.stringify({ retailerId, paymentMethod, total, phone, phoneNumber, mobileNumber })}`);
+    const { retailerId, items = [], paymentMethod, total = 0, applyRewardGas, rewardGasAmount, meterId, gasRewardWalletId, phone, phoneNumber, mobileNumber, retailer_email } = req.body;
+    log(`Body parsed: ${JSON.stringify({ retailerId, paymentMethod, total, phone, phoneNumber, mobileNumber, retailer_email })}`);
 
     const userId = req.user!.id;
     log(`User ID from req: ${userId}`);
@@ -79,28 +79,32 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
       retailerId: parseInt(retailerId as any)
     });
 
-    const approvalStatus = await prisma.customerLinkRequest.findUnique({
-      where: {
-        customerId_retailerId: {
-          customerId: consumerProfile.id,
-          retailerId: parseInt(retailerId as any)
+    const isUssdCallback = paymentMethod === 'ussd_callback';
+
+    if (!isUssdCallback) {
+      const approvalStatus = await prisma.customerLinkRequest.findUnique({
+        where: {
+          customerId_retailerId: {
+            customerId: consumerProfile.id,
+            retailerId: parseInt(retailerId as any)
+          }
         }
-      }
-    });
-
-    log(`Approval status: ${JSON.stringify(approvalStatus)}`);
-    console.log('🔍 [createOrder] Approval record found:', approvalStatus);
-
-    if ((!approvalStatus || approvalStatus.status !== 'approved') && process.env.DEV_MODE !== 'true') {
-      return res.status(403).json({
-        success: false,
-        error: 'You must be approved by this retailer before placing orders. Please send a link request and wait for approval.',
-        requiresLinking: true,
-        requestStatus: approvalStatus?.status || null
       });
+
+      log(`Approval status: ${JSON.stringify(approvalStatus)}`);
+      console.log('🔍 [createOrder] Approval record found:', approvalStatus);
+
+      if ((!approvalStatus || approvalStatus.status !== 'approved') && process.env.DEV_MODE !== 'true') {
+        return res.status(403).json({
+          success: false,
+          error: 'You must be approved by this retailer before placing orders. Please send a link request and wait for approval.',
+          requiresLinking: true,
+          requestStatus: approvalStatus?.status || null
+        });
+      }
     }
 
-    if (!items || items.length === 0) {
+    if (!isUssdCallback && (!items || items.length === 0)) {
       return res.status(400).json({ error: 'Order must contain items' });
     }
 
@@ -305,25 +309,27 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
 
       // 3. Validate and Decrement Stock
       console.log('Validating stock...');
-      const productIds = items.map((item: any) => Number(item.productId));
-      const dbProducts = await tx.product.findMany({
-        where: { id: { in: productIds } }
-      });
-      const productMap = new Map(dbProducts.map(p => [p.id, p]));
+      if (!isUssdCallback) {
+        const productIds = items.map((item: any) => Number(item.productId));
+        const dbProducts = await tx.product.findMany({
+          where: { id: { in: productIds } }
+        });
+        const productMap = new Map(dbProducts.map(p => [p.id, p]));
 
-      for (const item of items) {
-        const product = productMap.get(Number(item.productId));
-        if (!product) {
-          throw new Error(`Product not found: ID ${item.productId}`);
-        }
-        if (product.stock < item.quantity || product.stock <= 0) {
-          throw new Error(`Insufficient stock for product: ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
+        for (const item of items) {
+          const product = productMap.get(Number(item.productId));
+          if (!product) {
+            throw new Error(`Product not found: ID ${item.productId}`);
+          }
+          if (product.stock < item.quantity || product.stock <= 0) {
+            throw new Error(`Insufficient stock for product: ${product.name}. Available: ${product.stock}, Requested: ${item.quantity}`);
+          }
         }
       }
 
       const isMobileMoney = paymentMethod === 'mobile_money' || paymentMethod === 'momo' || paymentMethod === 'airtel';
 
-      if (!isMobileMoney) {
+      if (!isMobileMoney && !isUssdCallback) {
         console.log('Decrementing stock...');
         for (const item of items) {
           await tx.product.update({
@@ -344,20 +350,20 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
           paymentMethod: paymentMethod,
           // Store external PalmKash reference or legacy meterId
           meterId: (externalRef || meterId || null) as string,
-          notes: isMobileMoney ? JSON.stringify({ gasRewardWalletId: targetRewardId, rewardConsumerId: rewardConsumerId }) : null,
+          notes: isUssdCallback ? JSON.stringify({ retailer_email }) : (isMobileMoney ? JSON.stringify({ gasRewardWalletId: targetRewardId, rewardConsumerId: rewardConsumerId }) : null),
           saleItems: {
-            create: items.map((item: any) => ({
+            create: items && items.length > 0 ? items.map((item: any) => ({
               productId: item.productId,
               quantity: item.quantity,
               price: item.price
-            }))
+            })) : []
           }
         },
         include: { saleItems: true }
       });
 
       // 4. CREDIT GAS REWARDS
-      if (shouldCalculateReward && !isMobileMoney) {
+      if (shouldCalculateReward && !isMobileMoney && !isUssdCallback) {
         console.log('Calculating gas rewards...');
 
         // Calculate Profit from items using product costPrice (wholesaler price)
@@ -413,6 +419,30 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
 
     // --- Post-Transaction Event Triggers ---
     try {
+      const retailer = await prisma.retailerProfile.findUnique({
+        where: { id: Number(retailerId) },
+        include: { user: true }
+      });
+
+      if (isUssdCallback) {
+        if (retailer?.user?.email) {
+          await emailQueue.add('order-confirmation', {
+            to: retailer.user.email,
+            subject: `✅ New USSD Order Request: #${result.id}`,
+            html: `
+              <h3>New USSD Call-back Order Request</h3>
+              <p><strong>Customer Phone Number:</strong> ${phone || phoneNumber || mobileNumber || 'N/A'}</p>
+              <p><strong>Selected Retailer:</strong> ${retailer?.shopName || 'Retailer'}</p>
+              <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+              <p>Please call the customer back immediately to finalize their order details.</p>
+            `,
+            templateType: 'RETAILER_ORDER_CONFIRMATION',
+            relatedEntity: { type: 'SALE', id: result.id.toString() }
+          });
+        }
+        return res.status(201).json({ success: true, orderId: result.id });
+      }
+
       // 1. Notify Retailer of Low Stock for any items in the order
       const orderedProducts = await prisma.product.findMany({
         where: { id: { in: items.map((i: any) => i.productId) } },
@@ -438,10 +468,6 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
       }
 
       // 2. Notify Retailer of New Order
-      const retailer = await prisma.retailerProfile.findUnique({
-        where: { id: Number(retailerId) },
-        include: { user: true }
-      });
 
       if (retailer?.user?.email) {
         await emailQueue.add('order-confirmation', {
