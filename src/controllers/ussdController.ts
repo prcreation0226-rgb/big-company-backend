@@ -101,7 +101,8 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         '2. Ongera amafaranga',
         '3. Kora order',
         '4. Tanga Gas',
-        '5. Reba balance'
+        '5. Reba balance',
+        '6. Manage Orders'
       ].join('\n');
       return res.send(menu);
     }
@@ -785,6 +786,215 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       const creditBalance = wallets.find(w => w.type === 'credit_wallet')?.balance || 0;
 
       return res.send(`END Your Dashboard Balance is: ${dashboardBalance} RWF. Your Credit Balance is: ${creditBalance} RWF.`);
+    }
+
+    // ====================================================
+    // OPTION 6: Manage Orders (Pay / Confirm Delivery)
+    // ====================================================
+    if (choice === '6') {
+      const targetPhone = normalizePhoneNumber(phoneNumber);
+
+      // Level 1: Choose Action
+      if (parts.length === 1) {
+        const orderMenu = [
+          'CON Manage Orders:',
+          '1. Pay Pending Order',
+          '2. Confirm Delivery'
+        ].join('\n');
+        return res.send(orderMenu);
+      }
+
+      const orderAction = parts[1];
+
+      // ACTION 1: Pay Pending Order
+      if (orderAction === '1') {
+        const sales = await prisma.sale.findMany({
+          where: {
+            status: 'pending_payment',
+            notes: { contains: targetPhone }
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 3
+        });
+
+        if (sales.length === 0) {
+          return res.send('END You have no pending orders awaiting payment.');
+        }
+
+        // Level 2: List pending orders to choose
+        if (parts.length === 2) {
+          const listMenu = ['CON Select Order to Pay:'];
+          sales.forEach((s, idx) => {
+            listMenu.push(`${idx + 1}. Order #${s.id} (${s.totalAmount} RWF)`);
+          });
+          return res.send(listMenu.join('\n'));
+        }
+
+        const orderIdx = parseInt(parts[2], 10) - 1;
+        const sale = sales[orderIdx];
+        if (!sale) {
+          return res.send('END Invalid order selection.');
+        }
+
+        // Level 3: Select Payment Method
+        if (parts.length === 3) {
+          const paymentMenu = [
+            `CON Order #${sale.id} total is ${sale.totalAmount} RWF.`,
+            'Select Payment Method:',
+            '1. Wallet Balance',
+            '2. MTN Mobile Money',
+            '3. Airtel Money'
+          ].join('\n');
+          return res.send(paymentMenu);
+        }
+
+        const payMethodChoice = parts[3];
+
+        // PAYMENT METHOD 1: Wallet Balance
+        if (payMethodChoice === '1') {
+          // Check Wallet PIN
+          if (parts.length === 4) {
+            return res.send('CON Enter Card Number:');
+          }
+          const cardNum = parts[4];
+          if (!isValidCardFormat(cardNum)) {
+            return res.send('END Error: Invalid card number format.');
+          }
+
+          if (parts.length === 5) {
+            return res.send('CON Enter Card PIN:');
+          }
+          const cardPin = parts[5];
+
+          const card = await findNfcCard(cardNum);
+          if (!card || card.pin !== cardPin) {
+            return res.send('END Access denied.');
+          }
+
+          if (!card.consumerId) {
+            return res.send('END Error: Card is not linked to a customer profile.');
+          }
+
+          // Check balance in consumerProfile or Wallet
+          const consumer = await prisma.consumerProfile.findUnique({
+            where: { id: card.consumerId }
+          });
+
+          if (!consumer || consumer.walletBalance < sale.totalAmount) {
+            return res.send('END Error: Insufficient wallet balance.');
+          }
+
+          const saleItems = await prisma.saleItem.findMany({
+            where: { saleId: sale.id }
+          });
+
+          // Deduct & update sale status to 'pending' (paid)
+          await prisma.$transaction(async (tx) => {
+            await tx.consumerProfile.update({
+              where: { id: consumer.id },
+              data: { walletBalance: { decrement: sale.totalAmount } }
+            });
+
+            await tx.sale.update({
+              where: { id: sale.id },
+              data: {
+                status: 'pending',
+                paymentMethod: 'wallet'
+              }
+            });
+
+            // Decrement product stock
+            for (const item of saleItems) {
+              await tx.product.update({
+                where: { id: item.productId },
+                data: { stock: { decrement: item.quantity } }
+              });
+            }
+          });
+
+          return res.send(`END Payment successful! Your order #${sale.id} is now paid.`);
+        }
+
+        // PAYMENT METHOD 2: MTN Mobile Money
+        if (payMethodChoice === '2') {
+          const ordRef = `ORD-${Date.now()}`;
+          await prisma.sale.update({
+            where: { id: sale.id },
+            data: { meterId: ordRef }
+          });
+
+          try {
+            const palmKash = (await import('../services/palmKash.service')).default;
+            await palmKash.initiatePayment({
+              amount: sale.totalAmount,
+              phoneNumber: targetPhone,
+              referenceId: ordRef,
+              description: `USSD Order #${sale.id} Payment`
+            });
+          } catch (e: any) {
+            console.error('USSD MoMo pay error:', e.message);
+          }
+
+          return res.send('END Mobile Money transaction initiated. Please complete on your phone.');
+        }
+
+        // PAYMENT METHOD 3: Airtel Money
+        if (payMethodChoice === '3') {
+          const ordRef = `ORD-${Date.now()}`;
+          await prisma.sale.update({
+            where: { id: sale.id },
+            data: { meterId: ordRef, paymentMethod: 'airtel' }
+          });
+
+          try {
+            const palmKash = (await import('../services/palmKash.service')).default;
+            await palmKash.initiatePayment({
+              amount: sale.totalAmount,
+              phoneNumber: targetPhone,
+              referenceId: ordRef,
+              description: `USSD Order #${sale.id} Airtel Payment`
+            });
+          } catch (e: any) {
+            console.error('USSD Airtel pay error:', e.message);
+          }
+
+          return res.send('END Airtel Money transaction initiated. Please complete on your phone.');
+        }
+
+        return res.send('END Invalid selection.');
+      }
+
+      // ACTION 2: Confirm Delivery
+      if (orderAction === '2') {
+        const sale = await prisma.sale.findFirst({
+          where: {
+            status: { in: ['shipped', 'ready'] },
+            notes: { contains: targetPhone }
+          },
+          orderBy: { createdAt: 'desc' }
+        });
+
+        if (!sale) {
+          return res.send('END You have no orders ready for delivery confirmation.');
+        }
+
+        if (parts.length === 2) {
+          return res.send(`CON Confirm delivery of Order #${sale.id}?\n1. Yes\n2. No`);
+        }
+
+        const confirmVal = parts[2];
+        if (confirmVal === '1') {
+          await prisma.sale.update({
+            where: { id: sale.id },
+            data: { status: 'delivered' }
+          });
+          return res.send('END Delivery confirmed! Thank you.');
+        } else {
+          return res.send('END Confirmation cancelled.');
+        }
+      }
+
+      return res.send('END Invalid selection.');
     }
 
     return res.send('END Invalid choice.');
