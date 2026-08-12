@@ -347,15 +347,19 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
             // Trigger Gas recharge action using unit-based volume
             let apiResult: any;
-            if (meter.meterType === 'TOKEN') {
-              apiResult = await tokenMeterService.rechargeTokenMeter({
+            const provider = meter.isGprs ? 'zhongyi' : 'stronpower';
+
+            if (provider === 'zhongyi') {
+              const { default: zhongyiMeterService } = await import('../services/zhongyiMeter.service');
+              apiResult = await zhongyiMeterService.rechargeMeter({
                 meterNumber: meter.meterNumber,
                 amount: totalVolume,
                 customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`,
                 isVendByUnit: true
               });
             } else {
-              apiResult = await pipingMeterService.rechargePipingMeter({
+              // Apply Stronpower API (tokenMeterService) for both TOKEN and PIPING meters
+              apiResult = await tokenMeterService.rechargeTokenMeter({
                 meterNumber: meter.meterNumber,
                 amount: totalVolume,
                 customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`,
