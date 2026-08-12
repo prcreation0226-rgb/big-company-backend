@@ -966,7 +966,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
       // ACTION 2: Confirm Delivery
       if (orderAction === '2') {
-        const sale = await prisma.sale.findFirst({
+        const sales = await prisma.sale.findMany({
           where: {
             status: { in: ['shipped', 'ready'] },
             notes: { contains: targetPhone }
@@ -974,15 +974,31 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
           orderBy: { createdAt: 'desc' }
         });
 
-        if (!sale) {
+        if (sales.length === 0) {
           return res.send('END You have no orders ready for delivery confirmation.');
         }
 
+        // Level 2: List orders to choose
         if (parts.length === 2) {
+          const listMenu = ['CON Select Order to Confirm:'];
+          sales.forEach((s, idx) => {
+            listMenu.push(`${idx + 1}. Order #${s.id} (${s.totalAmount} RWF)`);
+          });
+          return res.send(listMenu.join('\n'));
+        }
+
+        const orderIdx = parseInt(parts[2], 10) - 1;
+        const sale = sales[orderIdx];
+        if (!sale) {
+          return res.send('END Invalid order selection.');
+        }
+
+        // Level 3: Confirm action
+        if (parts.length === 3) {
           return res.send(`CON Confirm delivery of Order #${sale.id}?\n1. Yes\n2. No`);
         }
 
-        const confirmVal = parts[2];
+        const confirmVal = parts[3];
         if (confirmVal === '1') {
           await prisma.sale.update({
             where: { id: sale.id },
