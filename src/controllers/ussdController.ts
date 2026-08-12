@@ -339,19 +339,27 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
               createdTxId = gasTx.id;
             });
 
-            // Trigger Gas recharge action
+            // Fetch System Configuration for Dynamic Pricing
+            const config = await prisma.systemConfig.findFirst();
+            const gasPrice = config?.gasPricePerM3 || 1500;
+            // Calculate gas volume in m³ (vending by unit)
+            const totalVolume = Math.floor((selectedAmount / gasPrice) * 10) / 10;
+
+            // Trigger Gas recharge action using unit-based volume
             let apiResult: any;
             if (meter.meterType === 'TOKEN') {
               apiResult = await tokenMeterService.rechargeTokenMeter({
                 meterNumber: meter.meterNumber,
-                amount: selectedAmount,
-                customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`
+                amount: totalVolume,
+                customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`,
+                isVendByUnit: true
               });
             } else {
               apiResult = await pipingMeterService.rechargePipingMeter({
                 meterNumber: meter.meterNumber,
-                amount: selectedAmount,
-                customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`
+                amount: totalVolume,
+                customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`,
+                isVendByUnit: true
               });
             }
 
