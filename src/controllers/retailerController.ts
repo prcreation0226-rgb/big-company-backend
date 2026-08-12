@@ -4243,6 +4243,17 @@ export const configureDraftOrder = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    // Parse customer phone number from notes
+    let customerPhone: string | null = null;
+    try {
+      const notesData = JSON.parse(currentSale.notes || '{}');
+      customerPhone = notesData.phone || notesData.phoneNumber || notesData.mobileNumber || null;
+    } catch (e) {
+      console.error('Failed to parse sale notes for phone number:', e);
+    }
+
+    const ordRef = `ORD-${Date.now()}`;
+
     await prisma.$transaction(async (tx) => {
       // Clear existing items if any
       await tx.saleItem.deleteMany({
@@ -4261,17 +4272,33 @@ export const configureDraftOrder = async (req: AuthRequest, res: Response) => {
         });
       }
 
-      // Update sale price and move status to awaiting_payment
+      // Update sale price, reference (meterId), and move status to pending_payment
       await tx.sale.update({
         where: { id: Number(id) },
         data: {
           totalAmount,
-          status: 'awaiting_payment'
+          status: 'pending_payment',
+          meterId: ordRef // Stored for PalmKash webhook mapping
         }
       });
     });
 
-    res.json({ success: true, message: 'Order configured successfully, awaiting payment' });
+    // Trigger MoMo STK prompt asynchronously
+    if (customerPhone) {
+      try {
+        const palmKash = (await import('../services/palmKash.service')).default;
+        await palmKash.initiatePayment({
+          amount: totalAmount,
+          phoneNumber: customerPhone,
+          referenceId: ordRef,
+          description: `USSD Order #${id} Payment`
+        });
+      } catch (err: any) {
+        console.error('Failed to trigger PalmKash STK prompt:', err.message);
+      }
+    }
+
+    res.json({ success: true, message: 'Order configured successfully, payment prompt sent' });
   } catch (error: any) {
     console.error('Configure draft order error:', error);
     res.status(500).json({ error: error.message });
