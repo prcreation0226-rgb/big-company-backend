@@ -42,7 +42,7 @@ export const createOrder = async (req: AuthRequest, res: Response) => {
           consumerId: null,
           retailerId: Number(retailerId),
           totalAmount: 0,
-          status: 'pending',
+          status: 'draft',
           paymentMethod: 'ussd_callback',
           notes: JSON.stringify({ retailer_email, phone: phone || phoneNumber || mobileNumber })
         }
