@@ -792,7 +792,8 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
     // OPTION 6: Manage Orders (Pay / Confirm Delivery)
     // ====================================================
     if (choice === '6') {
-      const targetPhone = normalizePhoneNumber(phoneNumber);
+      const targetPhone = normalizePhoneNumber(phoneNumber); // e.g. 250788881264
+      const shortPhone = targetPhone.startsWith('250') ? targetPhone.substring(3) : targetPhone; // e.g. 788881264
 
       // Level 1: Choose Action
       if (parts.length === 1) {
@@ -811,10 +812,13 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         const sales = await prisma.sale.findMany({
           where: {
             status: 'pending_payment',
-            notes: { contains: targetPhone }
+            OR: [
+              { notes: { contains: targetPhone } },
+              { notes: { contains: shortPhone } }
+            ]
           },
           orderBy: { createdAt: 'desc' },
-          take: 3
+          take: 5
         });
 
         if (sales.length === 0) {
@@ -969,7 +973,10 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         const sales = await prisma.sale.findMany({
           where: {
             status: { in: ['shipped', 'ready'] },
-            notes: { contains: targetPhone }
+            OR: [
+              { notes: { contains: targetPhone } },
+              { notes: { contains: shortPhone } }
+            ]
           },
           orderBy: { createdAt: 'desc' }
         });
