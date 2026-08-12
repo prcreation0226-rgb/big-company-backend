@@ -305,6 +305,8 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
           // Execute recharge under database transaction
           try {
+            let createdTxId: number | undefined;
+
             await prisma.$transaction(async (tx) => {
               // Deduct balance
               await tx.wallet.update({
@@ -323,35 +325,122 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
                 }
               });
 
-              // Log Gas Recharge Transaction
-              await tx.gasRechargeTransaction.create({
+              // Log Gas Recharge Transaction as PENDING
+              const gasTx = await tx.gasRechargeTransaction.create({
                 data: {
                   customerId: card.consumerId,
                   meterNumber: meter.meterNumber,
                   meterType: meter.meterType || 'PIPING',
                   amount: selectedAmount,
                   paymentMethod: 'wallet',
-                  status: 'SUCCESS'
+                  status: 'PENDING'
                 }
               });
+              createdTxId = gasTx.id;
             });
 
             // Trigger Gas recharge action
+            let apiResult: any;
             if (meter.meterType === 'TOKEN') {
-              await tokenMeterService.rechargeTokenMeter({
+              apiResult = await tokenMeterService.rechargeTokenMeter({
                 meterNumber: meter.meterNumber,
                 amount: selectedAmount,
                 customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`
               });
             } else {
-              await pipingMeterService.rechargePipingMeter({
+              apiResult = await pipingMeterService.rechargePipingMeter({
                 meterNumber: meter.meterNumber,
                 amount: selectedAmount,
                 customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`
               });
             }
 
-            return res.send('END Gas recharge complete. Thank you!');
+            // GPRS remote push integration
+            let pushResult = { success: true, error: null as any };
+            if (apiResult && apiResult.success && meter && meter.imei && apiResult.token) {
+              try {
+                const pushRes = await pipingMeterService.pushTokenToImei(meter.imei, apiResult.token);
+                if (pushRes && !pushRes.success) {
+                  pushResult.success = false;
+                  pushResult.error = pushRes.error || 'Remote push rejected';
+                }
+              } catch (pushErr: any) {
+                pushResult.success = false;
+                pushResult.error = pushErr.message || 'Remote push connection error';
+              }
+            }
+
+            const isFullySuccessful = apiResult && apiResult.success && pushResult.success;
+
+            if (isFullySuccessful && createdTxId) {
+              // Update transaction to SUCCESS and record token
+              await prisma.gasRechargeTransaction.update({
+                where: { id: createdTxId },
+                data: {
+                  status: 'SUCCESS',
+                  tokenValue: apiResult.token || null,
+                  apiReference: apiResult.apiReference || null
+                }
+              });
+
+              // Track Gas Topup and update Gas Meter units
+              try {
+                const config = await prisma.systemConfig.findFirst();
+                const gasPrice = config?.gasPricePerM3 || 1500;
+                const unitsPurchased = (apiResult && apiResult.units) ? Number(apiResult.units) : (selectedAmount / gasPrice);
+
+                await prisma.gasTopup.create({
+                  data: {
+                    consumerId: card.consumerId,
+                    meterId: meter.id,
+                    amount: selectedAmount,
+                    units: unitsPurchased,
+                    status: 'completed',
+                    orderId: String(createdTxId)
+                  }
+                });
+
+                await prisma.gasMeter.update({
+                  where: { id: meter.id },
+                  data: {
+                    currentUnits: { increment: unitsPurchased }
+                  }
+                });
+              } catch (topupErr) {
+                console.error('[USSD Recharge] Failed to create gas topup / update units:', topupErr);
+              }
+
+              return res.send('END Gas recharge complete. Thank you!');
+            } else {
+              // Rollback/Refund wallet on failure
+              await prisma.wallet.update({
+                where: { id: wallet.id },
+                data: { balance: { increment: selectedAmount } }
+              });
+
+              await prisma.walletTransaction.create({
+                data: {
+                  walletId: wallet.id,
+                  type: 'refund',
+                  amount: selectedAmount,
+                  description: `Refund: Gas Meter Recharge failed - Meter ${meterId} via USSD`,
+                  status: 'completed'
+                }
+              });
+
+              if (createdTxId) {
+                await prisma.gasRechargeTransaction.update({
+                  where: { id: createdTxId },
+                  data: {
+                    status: 'FAILED',
+                    errorMessage: pushResult.error || (apiResult && apiResult.error) || 'Meter recharge failed'
+                  }
+                });
+              }
+
+              const failureReason = pushResult.error || (apiResult && apiResult.error) || 'Recharge failed';
+              return res.send(`END Transaction failed: ${failureReason}`);
+            }
           } catch (err: any) {
             console.error('Wallet payment USSD transaction error:', err);
             return res.send('END Transaction failed.');
