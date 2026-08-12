@@ -53,7 +53,8 @@ import {
   getPaymentAuditLogs,
   getMyProfitInvoices,
   getRetailerLoans,
-  payRetailerLoan
+  payRetailerLoan,
+  configureDraftOrder
 } from '../controllers/retailerController';
 import { authenticate } from '../middleware/authMiddleware';
 
@@ -66,12 +67,13 @@ router.get('/inventory', getInventory);
 router.get('/inventory/categories', getCategories);
 router.post('/inventory', createProduct);
 router.put('/inventory/:id', updateProduct);
-router.get('/orders', getOrders);
-router.get('/orders/:id', getOrder);
-router.put('/orders/:id/status', updateSaleStatus);
-router.post('/orders/:id/cancel', cancelSale);
-router.post('/orders/:id/fulfill', fulfillSale);
-router.post('/orders', createOrder);
+  router.get('/orders', getOrders);
+  router.get('/orders/:id', getOrder);
+  router.put('/orders/:id/status', updateSaleStatus);
+  router.post('/orders/:id/cancel', cancelSale);
+  router.post('/orders/:id/fulfill', fulfillSale);
+  router.post('/orders/:id/configure', configureDraftOrder);
+  router.post('/orders', createOrder);
 router.get('/branches', getBranches);
 router.post('/branches', createBranch);
 router.get('/wallet', getWallet);

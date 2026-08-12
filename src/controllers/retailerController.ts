@@ -614,7 +614,11 @@ export const getOrders = async (req: AuthRequest, res: Response) => {
       retailerId: retailerProfile.id
     };
 
-    if (status) where.status = status;
+    if (status) {
+      where.status = status;
+    } else {
+      where.status = { notIn: ['draft', 'awaiting_payment'] };
+    }
     if (payment_status) where.paymentMethod = payment_status; // Mapping payment_status filter to paymentMethod
 
     // Search by ID or Customer Name
@@ -1290,6 +1294,8 @@ export const updateSaleStatus = async (req: AuthRequest, res: Response) => {
     // State machine: pending -> confirmed/processing -> shipped -> ready -> completed / delivered
     // MAP: 'confirmed' or 'processing' will be treated as "Proceed" in UI
     const validTransitions: Record<string, string[]> = {
+      'draft': ['awaiting_payment', 'cancelled'],
+      'awaiting_payment': ['pending', 'cancelled'],
       'pending_payment': ['cancelled'],
       'pending': ['confirmed', 'processing', 'cancelled'],
       'confirmed': ['shipped', 'ready', 'cancelled'],
@@ -4187,6 +4193,87 @@ export const payRetailerLoan = async (req: AuthRequest, res: Response) => {
     res.json({ success: true, message: 'Repayment successful' });
   } catch (error: any) {
     console.error('Retailer loan repayment error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Configure a Draft Order (build order items & set amount)
+export const configureDraftOrder = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { items = [] } = req.body;
+
+    const currentSale = await prisma.sale.findUnique({
+      where: { id: Number(id) },
+      include: { saleItems: true }
+    });
+
+    if (!currentSale) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const retailerProfile = await prisma.retailerProfile.findUnique({
+      where: { userId: req.user!.id }
+    });
+
+    if (!retailerProfile || currentSale.retailerId !== retailerProfile.id) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    if (currentSale.status !== 'draft') {
+      return res.status(400).json({ error: 'Can only configure draft orders' });
+    }
+
+    let totalAmount = 0;
+    const saleItemsData = [];
+
+    for (const item of items) {
+      const product = await prisma.product.findFirst({
+        where: { id: Number(item.productId), retailerId: retailerProfile.id }
+      });
+      if (!product) {
+        return res.status(400).json({ error: `Product not found or invalid: ${item.productId}` });
+      }
+      const price = product.price;
+      totalAmount += price * Number(item.quantity);
+      saleItemsData.push({
+        productId: product.id,
+        quantity: Number(item.quantity),
+        price: price
+      });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Clear existing items if any
+      await tx.saleItem.deleteMany({
+        where: { saleId: Number(id) }
+      });
+
+      // Insert new configured items
+      for (const item of saleItemsData) {
+        await tx.saleItem.create({
+          data: {
+            saleId: Number(id),
+            productId: item.productId,
+            quantity: item.quantity,
+            price: item.price
+          }
+        });
+      }
+
+      // Update sale price and move status to awaiting_payment
+      await tx.sale.update({
+        where: { id: Number(id) },
+        data: {
+          totalAmount,
+          status: 'awaiting_payment'
+        }
+      });
+    });
+
+    res.json({ success: true, message: 'Order configured successfully, awaiting payment' });
+  } catch (error: any) {
+    console.error('Configure draft order error:', error);
     res.status(500).json({ error: error.message });
   }
 };
