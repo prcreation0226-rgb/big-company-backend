@@ -180,7 +180,7 @@ export const addGasMeter = async (req: AuthRequest, res: Response) => {
                 serialNo: matchedGprs ? matchedGprs.serialNo : (serial_no || null),
                 meterKey: matchedGprs ? matchedGprs.meterKey : (meter_key || null),
                 isGprs: matchedGprs ? true : false,
-                meterType: matchedGprs ? 'TOKEN' : (meter_type === 'PIPING' || meter_type === 'GPRS' ? 'PIPING' : 'TOKEN'),
+                meterType: matchedGprs ? 'PIPING' : (meter_type === 'PIPING' || meter_type === 'GPRS' ? 'PIPING' : 'TOKEN'),
                 aliasName: alias_name || 'My Meter',
                 ownerName: owner_name,
                 ownerPhone: owner_phone,
