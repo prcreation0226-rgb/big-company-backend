@@ -156,7 +156,7 @@ export const addGasMeter = async (req: AuthRequest, res: Response) => {
             return res.status(404).json({ success: false, error: 'Customer profile not found' });
         }
 
-        // Check if meter already exists for this consumer
+        // Check if meter already exists for this consumer (active or removed)
         const existingMeter = await prisma.gasMeter.findFirst({
             where: { 
                 meterNumber: meter_number,
@@ -165,7 +165,46 @@ export const addGasMeter = async (req: AuthRequest, res: Response) => {
         });
 
         if (existingMeter) {
-            return res.status(400).json({ success: false, error: 'Meter number already registered' });
+            if (existingMeter.status === 'removed') {
+                // Reactivate the existing meter
+                const updatedMeter = await prisma.gasMeter.update({
+                    where: { id: existingMeter.id },
+                    data: {
+                        status: 'active',
+                        aliasName: alias_name || existingMeter.aliasName || 'My Meter',
+                        ownerName: owner_name || existingMeter.ownerName,
+                        ownerPhone: owner_phone || existingMeter.ownerPhone
+                    }
+                });
+                return res.json({
+                    success: true,
+                    data: {
+                        id: updatedMeter.id,
+                        meter_number: updatedMeter.meterNumber,
+                        owner_name: updatedMeter.ownerName,
+                        owner_phone: updatedMeter.ownerPhone,
+                        status: updatedMeter.status
+                    },
+                    message: 'Gas meter reactivated successfully'
+                });
+            } else {
+                return res.status(400).json({ success: false, error: 'Meter number already registered and active' });
+            }
+        }
+
+        // Check if meter is currently active under any other account
+        const activeMeterElsewhere = await prisma.gasMeter.findFirst({
+            where: {
+                meterNumber: meter_number,
+                status: 'active'
+            }
+        });
+
+        if (activeMeterElsewhere) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'This meter number is already registered and active under another account. It must be removed from the other account first.' 
+            });
         }
 
         const matchedGprs = gprsMapping.find(
@@ -210,10 +249,43 @@ export const addGasMeter = async (req: AuthRequest, res: Response) => {
 
 // Remove gas meter
 export const removeGasMeter = async (req: AuthRequest, res: Response) => {
-    return res.status(403).json({
-        success: false,
-        error: 'Meters cannot be deleted once registered to preserve transaction history. Please contact the administrator.'
-    });
+    try {
+        const userId = req.user!.id;
+        const { id } = req.params;
+
+        const consumerProfile = await prisma.consumerProfile.findUnique({
+            where: { userId }
+        });
+
+        if (!consumerProfile) {
+            return res.status(404).json({ success: false, error: 'Customer profile not found' });
+        }
+
+        const meter = await prisma.gasMeter.findFirst({
+            where: {
+                id: Number(id),
+                consumerId: consumerProfile.id
+            }
+        });
+
+        if (!meter) {
+            return res.status(404).json({ success: false, error: 'Gas meter not found' });
+        }
+
+        // Soft delete the meter
+        await prisma.gasMeter.update({
+            where: { id: meter.id },
+            data: { status: 'removed' }
+        });
+
+        res.json({
+            success: true,
+            message: 'Gas meter removed successfully'
+        });
+    } catch (error: any) {
+        console.error('Remove gas meter error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
 };
 
 // Topup gas
