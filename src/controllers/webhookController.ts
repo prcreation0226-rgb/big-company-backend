@@ -215,6 +215,7 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
 
                 let meter = await prisma.gasMeter.findFirst({
                     where: {
+                        consumerId: txRecord.customerId || undefined,
                         OR: [
                             { meterNumber: txRecord.meterNumber },
                             { meterNumber: `MTR-${txRecord.meterNumber}` },
