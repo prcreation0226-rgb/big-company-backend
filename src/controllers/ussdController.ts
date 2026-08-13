@@ -27,7 +27,7 @@ function normalizePhoneNumber(phone: string): string {
  */
 async function findNfcCard(cardNumInput: string) {
   const cleaned = cardNumInput.replace(/[\s:]/g, '').toUpperCase();
-  
+
   // 1. Direct search by uid (exactly as is)
   let card = await prisma.nfcCard.findFirst({
     where: { uid: cardNumInput.trim() }
@@ -80,7 +80,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
   // Parse path choices split by asterisk
   let parts = text.toString().split('*').map((s: string) => s.trim()).filter((s: string) => s !== '');
-  
+
   // Strip service code prefix if present (e.g. 939*15, 939, 121, 123)
   if (parts.length > 0 && ['939', '121', '123'].includes(parts[0])) {
     if (parts[0] === '939' && parts[1] === '15') {
@@ -89,14 +89,14 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       parts = parts.slice(1);
     }
   }
-  
+
   try {
     // ----------------------------------------------------
     // ROOT MENU
     // ----------------------------------------------------
     if (parts.length === 0) {
       const menu = [
-        'CON Welcome to EMS Ltd',
+        'Welcome',
         '1. Gura Gas',
         '2. Ongera amafaranga',
         '3. Kora order',
@@ -130,9 +130,38 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       const meterId = parts[2];
 
       // Verification: Check if Meter ID exists
-      const meter = await prisma.gasMeter.findFirst({
-        where: { meterNumber: meterId }
+      const targetPhone = normalizePhoneNumber(phoneNumber);
+      const callerUser = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: targetPhone },
+            { phone: phoneNumber }
+          ]
+        }
       });
+      let callerConsumer = null;
+      if (callerUser) {
+        callerConsumer = await prisma.consumerProfile.findFirst({
+          where: { userId: callerUser.id }
+        });
+      }
+
+      let meter = null;
+      if (callerConsumer) {
+        meter = await prisma.gasMeter.findFirst({
+          where: {
+            meterNumber: meterId,
+            consumerId: callerConsumer.id
+          }
+        });
+      }
+
+      if (!meter) {
+        meter = await prisma.gasMeter.findFirst({
+          where: { meterNumber: meterId }
+        });
+      }
+
       if (!meter) {
         return res.send('END Invalid Meter ID. Please check the code and try again.');
       }
@@ -294,6 +323,17 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
           if (!card.consumerId) {
             return res.send('END Error: Card is not linked to any customer profile.');
+          }
+
+          // Refine meter lookup to the one belonging to the card owner if duplicates exist
+          const refinedMeter = await prisma.gasMeter.findFirst({
+            where: {
+              meterNumber: meterId,
+              consumerId: card.consumerId
+            }
+          });
+          if (refinedMeter) {
+            meter = refinedMeter;
           }
 
           // Balance check
@@ -620,7 +660,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         retailers.forEach((r, idx) => retMenu.push(`${idx + 1}. ${r.shopName || 'Retailer'}`));
         return res.send(retMenu.join('\n'));
       }
-      
+
       const retailerIdx = parseInt(parts[3], 10) - 1;
       const selectedRetailer = retailers[retailerIdx];
       if (!selectedRetailer) {
@@ -656,9 +696,9 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
           const mockRes = {
             status: (code: number) => ({
-              json: (data: any) => {}
+              json: (data: any) => { }
             }),
-            json: (data: any) => {}
+            json: (data: any) => { }
           } as any;
 
           await createOrder(mockReq, mockRes);
@@ -767,9 +807,9 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
           const mockRes = {
             status: (code: number) => ({
-              json: (data: any) => {}
+              json: (data: any) => { }
             }),
-            json: (data: any) => {}
+            json: (data: any) => { }
           } as any;
 
           const { sendToMeter } = await import('./rewardsController');
@@ -1150,7 +1190,7 @@ export const handleUSSDRequest = async (req: Request, res: Response) => {
   }
 
   const isXML = bodyText.trim().startsWith('<?xml') || bodyText.includes('<request') || contentType.includes('xml');
-  
+
   let isAirtel = false;
   if (!isXML) {
     if (typeof req.body === 'string') {
@@ -1211,7 +1251,7 @@ export const handleUSSDRequest = async (req: Request, res: Response) => {
             data: { sessionId, phoneNumber: msisdn, accumulatedText: '' }
           });
         }
-        
+
         let newText = '';
         if (session.accumulatedText) {
           newText = `${session.accumulatedText}*${subscriberInput}`;
