@@ -856,35 +856,56 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
         // PAYMENT METHOD 1: Wallet Balance
         if (payMethodChoice === '1') {
-          // Check Wallet PIN
+          // Step 1: Select Wallet Type
           if (parts.length === 4) {
+            const walletTypeMenu = [
+              'CON Select Wallet Type:',
+              '1. Dashboard Balance',
+              '2. Credit Balance'
+            ].join('\n');
+            return res.send(walletTypeMenu);
+          }
+          const walletTypeChoice = parts[4];
+          if (walletTypeChoice !== '1' && walletTypeChoice !== '2') {
+            return res.send('END Invalid selection.');
+          }
+          const walletTypeName = walletTypeChoice === '1' ? 'Dashboard Balance' : 'Credit Balance';
+
+          // Step 2: Enter Card Number
+          if (parts.length === 5) {
             return res.send('CON Enter Card Number:');
           }
-          const cardNum = parts[4];
+          const cardNum = parts[5];
           if (!isValidCardFormat(cardNum)) {
             return res.send('END Error: Invalid card number format.');
           }
 
-          if (parts.length === 5) {
+          // Step 3: Enter Card PIN
+          if (parts.length === 6) {
             return res.send('CON Enter Card PIN:');
           }
-          const cardPin = parts[5];
+          const cardPin = parts[6];
 
+          // Authenticate Card and Wallet Check
           const card = await findNfcCard(cardNum);
           if (!card || card.pin !== cardPin) {
             return res.send('END Access denied.');
+          }
+
+          if (card.status !== 'active') {
+            return res.send('END Error: Card is inactive or invalid.');
           }
 
           if (!card.consumerId) {
             return res.send('END Error: Card is not linked to a customer profile.');
           }
 
-          // Check balance in consumerProfile or Wallet
-          const consumer = await prisma.consumerProfile.findUnique({
-            where: { id: card.consumerId }
+          const dbWalletType = walletTypeChoice === '1' ? 'dashboard_wallet' : 'credit_wallet';
+          const wallet = await prisma.wallet.findFirst({
+            where: { consumerId: card.consumerId, type: dbWalletType }
           });
 
-          if (!consumer || consumer.walletBalance < sale.totalAmount) {
+          if (!wallet || wallet.balance < sale.totalAmount) {
             return res.send('END Error: Insufficient wallet balance.');
           }
 
@@ -894,11 +915,30 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
           // Deduct & update sale status to 'pending' (paid)
           await prisma.$transaction(async (tx) => {
+            // Deduct from Wallet table
+            await tx.wallet.update({
+              where: { id: wallet.id },
+              data: { balance: { decrement: sale.totalAmount } }
+            });
+
+            // Sync with ConsumerProfile walletBalance
             await tx.consumerProfile.update({
-              where: { id: consumer.id },
+              where: { id: card.consumerId! },
               data: { walletBalance: { decrement: sale.totalAmount } }
             });
 
+            // Log Wallet Transaction
+            await tx.walletTransaction.create({
+              data: {
+                walletId: wallet.id,
+                type: 'order_payment',
+                amount: -sale.totalAmount,
+                description: `Order Payment - Order #${sale.id} via USSD (${walletTypeName})`,
+                status: 'completed'
+              }
+            });
+
+            // Update Sale Status to 'pending' (paid)
             await tx.sale.update({
               where: { id: sale.id },
               data: {
