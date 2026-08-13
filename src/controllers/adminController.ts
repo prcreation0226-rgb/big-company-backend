@@ -345,11 +345,11 @@ export const getReports = async (req: AuthRequest, res: Response) => {
 
     // 1. Stats based on date range
     const [sales, wholesaleOrders, gasTopups] = await Promise.all([
-      prisma.sale.findMany({ 
-        where: { 
+      prisma.sale.findMany({
+        where: {
           createdAt: { gte: startDate },
           saleItems: { some: {} }
-        } 
+        }
       }),
       prisma.order.findMany({ where: { createdAt: { gte: startDate } } }),
       prisma.gasTopup.findMany({ where: { createdAt: { gte: startDate }, status: { in: ['completed', 'success'] } } })
@@ -454,7 +454,7 @@ export const getReports = async (req: AuthRequest, res: Response) => {
     const retailers = await prisma.retailerProfile.findMany({
       include: {
         sales: {
-          where: { 
+          where: {
             status: { in: ['completed', 'delivered'] },
             saleItems: { some: {} }
           }
@@ -556,7 +556,7 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
         }
 
         // Exclude any transaction flagged with a Gas product category
-        const hasGasItem = sale.saleItems.some(item => 
+        const hasGasItem = sale.saleItems.some(item =>
           gasProductIds.has(item.productId)
         );
         if (hasGasItem) {
@@ -4316,6 +4316,7 @@ export const resendEmail = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ success: false, error: 'Email log not found' });
     }
 
+
     // Add back to queue (Requirement 4.2.9)
     await emailQueue.add('manual-resend', {
       to: log.channel === 'SMS' ? log.recipientPhone : log.recipientEmail,
@@ -4325,9 +4326,9 @@ export const resendEmail = async (req: AuthRequest, res: Response) => {
       logId: log.id,
     });
 
-    res.json({ 
-      success: true, 
-      message: log.channel === 'SMS' ? 'SMS has been queued for resending' : 'Email has been queued for resending' 
+    res.json({
+      success: true,
+      message: log.channel === 'SMS' ? 'SMS has been queued for resending' : 'Email has been queued for resending'
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
