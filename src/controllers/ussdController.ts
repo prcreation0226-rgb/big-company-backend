@@ -140,7 +140,9 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
       // Check if selected meter type matches actual meter type in database
       const expectedType = meterTypeChoice === '1' ? 'TOKEN' : 'PIPING';
       if (meter.meterType !== expectedType) {
-        return res.send('END Invalid Meter ID. Please check the code and try again.');
+        const dbLabel = meter.meterType === 'TOKEN' ? 'Zamuka (TOKEN)' : 'Tekana (PIPING)';
+        const selectLabel = expectedType === 'TOKEN' ? 'Zamuka (TOKEN)' : 'Tekana (PIPING)';
+        return res.send(`END Error: This meter is registered as a ${dbLabel} meter, but you selected ${selectLabel}.`);
       }
 
       // Step 3: Select Amount (Pricing Menu)
@@ -421,6 +423,36 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
                 });
               } catch (topupErr) {
                 console.error('[USSD Recharge] Failed to create gas topup / update units:', topupErr);
+              }
+
+              // Send SMS notification
+              try {
+                const consumer = await prisma.consumerProfile.findFirst({
+                  where: { id: card.consumerId || undefined },
+                  include: { user: true }
+                });
+                if (consumer) {
+                  const { emailQueue } = await import('../queues/email.queue');
+                  const smsDestination = consumer.user.phone || consumer.user.email || '';
+                  if (smsDestination) {
+                    await emailQueue.add('gas-recharge-success', {
+                      to: smsDestination,
+                      templateType: 'gas-recharge-success',
+                      data: {
+                        customer_name: consumer.fullName || consumer.user.name || 'Valued Customer',
+                        meter_name: 'Gas Meter',
+                        meter_id: meter.meterNumber,
+                        amount: selectedAmount.toLocaleString(),
+                        token: apiResult.token || 'Remote GPRS Topup',
+                        transaction_id: String(createdTxId),
+                        volume: totalVolume
+                      },
+                      relatedEntity: { type: 'USER', id: consumer.userId.toString() }
+                    });
+                  }
+                }
+              } catch (notifyErr) {
+                console.error('[USSD Wallet Recharge] Failed to trigger notification:', notifyErr);
               }
 
               return res.send('END Gas recharge complete. Thank you!');

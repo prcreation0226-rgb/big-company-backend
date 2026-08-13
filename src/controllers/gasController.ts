@@ -210,44 +210,10 @@ export const addGasMeter = async (req: AuthRequest, res: Response) => {
 
 // Remove gas meter
 export const removeGasMeter = async (req: AuthRequest, res: Response) => {
-    try {
-        const userId = req.user!.id;
-        const { id } = req.params;
-
-        const consumerProfile = await prisma.consumerProfile.findUnique({
-            where: { userId }
-        });
-
-        if (!consumerProfile) {
-            return res.status(404).json({ success: false, error: 'Customer profile not found' });
-        }
-
-        const meter = await prisma.gasMeter.findUnique({
-            where: { id: Number(id) }
-        });
-
-        if (!meter || meter.consumerId !== consumerProfile.id) {
-            return res.status(404).json({ success: false, error: 'Gas meter not found' });
-        }
-
-        // Hard delete
-        // We delete related topups first to avoid foreign key constraints
-        await prisma.gasTopup.deleteMany({
-            where: { meterId: Number(id) }
-        });
-
-        await prisma.gasMeter.delete({
-            where: { id: Number(id) }
-        });
-
-        res.json({
-            success: true,
-            message: 'Gas meter removed successfully'
-        });
-    } catch (error: any) {
-        console.error('Remove gas meter error:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
+    return res.status(403).json({
+        success: false,
+        error: 'Meters cannot be deleted once registered to preserve transaction history. Please contact the administrator.'
+    });
 };
 
 // Topup gas
