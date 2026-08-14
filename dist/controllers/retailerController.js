@@ -46,6 +46,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.payRetailerLoan = exports.getRetailerLoans = exports.getMyProfitInvoices = exports.getCategories = exports.getPaymentAuditLogs = exports.getGasRewardsGiven = exports.confirmPurchaseOrderDelivery = exports.getPurchaseOrder = exports.getPurchaseOrders = exports.getSettlementInvoice = exports.getSettlementInvoices = exports.unlinkCustomer = exports.getLinkedCustomers = exports.rejectCustomerLinkRequest = exports.approveCustomerLinkRequest = exports.getCustomerLinkRequests = exports.linkCardForCustomer = exports.cancelLinkRequest = exports.getMyLinkRequests = exports.sendLinkRequest = exports.getAvailableWholesalers = exports.getAnalytics = exports.topUpWallet = exports.updateProfile = exports.getProfile = exports.payCredit = exports.makeRepayment = exports.requestCredit = exports.getCreditOrder = exports.getCreditOrders = exports.getCreditInfo = exports.getWalletTransactions = exports.createOrder = exports.getWholesalerProducts = exports.getDailySales = exports.fulfillSale = exports.cancelSale = exports.updateSaleStatus = exports.createSale = exports.scanBarcode = exports.getPOSProducts = exports.getWallet = exports.createBranch = exports.getBranches = exports.getOrder = exports.getOrders = exports.updateProduct = exports.createProduct = exports.getInventory = exports.getDashboardStats = void 0;
+exports.configureDraftOrder = void 0;
 const prisma_1 = __importDefault(require("../utils/prisma"));
 const cloudinary_1 = require("../utils/cloudinary");
 const email_queue_1 = require("../queues/email.queue");
@@ -578,8 +579,12 @@ const getOrders = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
         const where = {
             retailerId: retailerProfile.id
         };
-        if (status)
+        if (status) {
             where.status = status;
+        }
+        else {
+            where.status = { notIn: ['draft', 'awaiting_payment'] };
+        }
         if (payment_status)
             where.paymentMethod = payment_status; // Mapping payment_status filter to paymentMethod
         // Search by ID or Customer Name
@@ -1184,6 +1189,8 @@ const updateSaleStatus = (req, res) => __awaiter(void 0, void 0, void 0, functio
         // State machine: pending -> confirmed/processing -> shipped -> ready -> completed / delivered
         // MAP: 'confirmed' or 'processing' will be treated as "Proceed" in UI
         const validTransitions = {
+            'draft': ['awaiting_payment', 'cancelled'],
+            'awaiting_payment': ['pending', 'cancelled'],
             'pending_payment': ['cancelled'],
             'pending': ['confirmed', 'processing', 'cancelled'],
             'confirmed': ['shipped', 'ready', 'cancelled'],
@@ -3827,3 +3834,100 @@ const payRetailerLoan = (req, res) => __awaiter(void 0, void 0, void 0, function
     }
 });
 exports.payRetailerLoan = payRetailerLoan;
+// Configure a Draft Order (build order items & set amount)
+const configureDraftOrder = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { id } = req.params;
+        const { items = [] } = req.body;
+        const currentSale = yield prisma_1.default.sale.findUnique({
+            where: { id: Number(id) },
+            include: { saleItems: true }
+        });
+        if (!currentSale) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+        const retailerProfile = yield prisma_1.default.retailerProfile.findUnique({
+            where: { userId: req.user.id }
+        });
+        if (!retailerProfile || currentSale.retailerId !== retailerProfile.id) {
+            return res.status(403).json({ error: 'Unauthorized' });
+        }
+        if (currentSale.status !== 'draft') {
+            return res.status(400).json({ error: 'Can only configure draft orders' });
+        }
+        let totalAmount = 0;
+        const saleItemsData = [];
+        for (const item of items) {
+            const product = yield prisma_1.default.product.findFirst({
+                where: { id: Number(item.productId), retailerId: retailerProfile.id }
+            });
+            if (!product) {
+                return res.status(400).json({ error: `Product not found or invalid: ${item.productId}` });
+            }
+            const price = product.price;
+            totalAmount += price * Number(item.quantity);
+            saleItemsData.push({
+                productId: product.id,
+                quantity: Number(item.quantity),
+                price: price
+            });
+        }
+        // Parse customer phone number from notes
+        let customerPhone = null;
+        try {
+            const notesData = JSON.parse(currentSale.notes || '{}');
+            customerPhone = notesData.phone || notesData.phoneNumber || notesData.mobileNumber || null;
+        }
+        catch (e) {
+            console.error('Failed to parse sale notes for phone number:', e);
+        }
+        const ordRef = `ORD-${Date.now()}`;
+        yield prisma_1.default.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
+            // Clear existing items if any
+            yield tx.saleItem.deleteMany({
+                where: { saleId: Number(id) }
+            });
+            // Insert new configured items
+            for (const item of saleItemsData) {
+                yield tx.saleItem.create({
+                    data: {
+                        saleId: Number(id),
+                        productId: item.productId,
+                        quantity: item.quantity,
+                        price: item.price
+                    }
+                });
+            }
+            // Update sale price, reference (meterId), and move status to pending_payment
+            yield tx.sale.update({
+                where: { id: Number(id) },
+                data: {
+                    totalAmount,
+                    status: 'pending_payment',
+                    meterId: ordRef // Stored for PalmKash webhook mapping
+                }
+            });
+        }));
+        // Trigger MoMo STK prompt asynchronously
+        if (customerPhone) {
+            try {
+                const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
+                yield palmKash.initiatePayment({
+                    amount: totalAmount,
+                    phoneNumber: customerPhone,
+                    referenceId: ordRef,
+                    description: `USSD Order #${id} Payment`
+                });
+            }
+            catch (err) {
+                console.error('Failed to trigger PalmKash STK prompt:', err.message);
+            }
+        }
+        res.json({ success: true, message: 'Order configured successfully, payment prompt sent' });
+    }
+    catch (error) {
+        console.error('Configure draft order error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+exports.configureDraftOrder = configureDraftOrder;

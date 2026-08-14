@@ -3911,13 +3911,16 @@ const resendEmail = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         }
         // Add back to queue (Requirement 4.2.9)
         yield email_queue_1.emailQueue.add('manual-resend', {
-            to: log.recipientEmail,
+            to: log.channel === 'SMS' ? log.recipientPhone : log.recipientEmail,
             // @ts-ignore
             subject: log.subject,
             templateType: log.templateType,
             logId: log.id,
         });
-        res.json({ success: true, message: 'Email has been queued for resending' });
+        res.json({
+            success: true,
+            message: log.channel === 'SMS' ? 'SMS has been queued for resending' : 'Email has been queued for resending'
+        });
     }
     catch (error) {
         res.status(500).json({ success: false, error: error.message });

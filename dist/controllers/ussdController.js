@@ -138,12 +138,13 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
         // ----------------------------------------------------
         if (parts.length === 0) {
             const menu = [
-                'CON Welcome to EMS Ltd',
+                'Welcome',
                 '1. Gura Gas',
                 '2. Ongera amafaranga',
                 '3. Kora order',
                 '4. Tanga Gas',
-                '5. Reba balance'
+                '5. Reba balance',
+                '6. Manage Orders'
             ].join('\n');
             return res.send(menu);
         }
@@ -166,16 +167,44 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
             }
             const meterId = parts[2];
             // Verification: Check if Meter ID exists
-            const meter = yield prisma_1.default.gasMeter.findFirst({
-                where: { meterNumber: meterId }
+            const targetPhone = normalizePhoneNumber(phoneNumber);
+            const callerUser = yield prisma_1.default.user.findFirst({
+                where: {
+                    OR: [
+                        { phone: targetPhone },
+                        { phone: phoneNumber }
+                    ]
+                }
             });
+            let callerConsumer = null;
+            if (callerUser) {
+                callerConsumer = yield prisma_1.default.consumerProfile.findFirst({
+                    where: { userId: callerUser.id }
+                });
+            }
+            let meter = null;
+            if (callerConsumer) {
+                meter = yield prisma_1.default.gasMeter.findFirst({
+                    where: {
+                        meterNumber: meterId,
+                        consumerId: callerConsumer.id
+                    }
+                });
+            }
+            if (!meter) {
+                meter = yield prisma_1.default.gasMeter.findFirst({
+                    where: { meterNumber: meterId }
+                });
+            }
             if (!meter) {
                 return res.send('END Invalid Meter ID. Please check the code and try again.');
             }
             // Check if selected meter type matches actual meter type in database
             const expectedType = meterTypeChoice === '1' ? 'TOKEN' : 'PIPING';
             if (meter.meterType !== expectedType) {
-                return res.send('END Invalid Meter ID. Please check the code and try again.');
+                const dbLabel = meter.meterType === 'TOKEN' ? 'Zamuka (TOKEN)' : 'Tekana (PIPING)';
+                const selectLabel = expectedType === 'TOKEN' ? 'Zamuka (TOKEN)' : 'Tekana (PIPING)';
+                return res.send(`END Error: This meter is registered as a ${dbLabel} meter, but you selected ${selectLabel}.`);
             }
             // Step 3: Select Amount (Pricing Menu)
             if (parts.length === 3) {
@@ -297,9 +326,13 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
                 }
                 const walletTypeName = walletTypeChoice === '1' ? 'Dashboard Balance' : 'Credit Balance';
                 if (parts.length === 8) {
+                    return res.send('CON Enter phone number to receive SMS (e.g. 07XXXXXXXX):');
+                }
+                const customSmsPhone = normalizePhoneNumber(parts[8]);
+                if (parts.length === 9) {
                     return res.send(`CON Confirm payment of ${selectedAmount} RWF for Meter ${meterId} from your ${walletTypeName}?\n1. Yes\n2. No`);
                 }
-                const confirmVal = parts[8];
+                const confirmVal = parts[9];
                 if (confirmVal === '1') {
                     // Authenticate Card Number and PIN
                     const card = yield findNfcCard(cardNum);
@@ -312,6 +345,16 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     if (!card.consumerId) {
                         return res.send('END Error: Card is not linked to any customer profile.');
                     }
+                    // Refine meter lookup to the one belonging to the card owner if duplicates exist
+                    const refinedMeter = yield prisma_1.default.gasMeter.findFirst({
+                        where: {
+                            meterNumber: meterId,
+                            consumerId: card.consumerId
+                        }
+                    });
+                    if (refinedMeter) {
+                        meter = refinedMeter;
+                    }
                     // Balance check
                     const dbWalletType = walletTypeChoice === '1' ? 'dashboard_wallet' : 'credit_wallet';
                     const wallet = yield prisma_1.default.wallet.findFirst({
@@ -322,6 +365,7 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     }
                     // Execute recharge under database transaction
                     try {
+                        let createdTxId;
                         yield prisma_1.default.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
                             // Deduct balance
                             yield tx.wallet.update({
@@ -338,34 +382,156 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
                                     status: 'completed'
                                 }
                             });
-                            // Log Gas Recharge Transaction
-                            yield tx.gasRechargeTransaction.create({
+                            // Log Gas Recharge Transaction as PENDING
+                            const gasTx = yield tx.gasRechargeTransaction.create({
                                 data: {
                                     customerId: card.consumerId,
                                     meterNumber: meter.meterNumber,
                                     meterType: meter.meterType || 'PIPING',
                                     amount: selectedAmount,
                                     paymentMethod: 'wallet',
-                                    status: 'SUCCESS'
+                                    paymentPhone: customSmsPhone,
+                                    status: 'PENDING'
                                 }
                             });
+                            createdTxId = gasTx.id;
                         }));
-                        // Trigger Gas recharge action
-                        if (meter.meterType === 'TOKEN') {
-                            yield tokenMeter_service_1.default.rechargeTokenMeter({
+                        // Fetch System Configuration for Dynamic Pricing
+                        const config = yield prisma_1.default.systemConfig.findFirst();
+                        const gasPrice = (config === null || config === void 0 ? void 0 : config.gasPricePerM3) || 1500;
+                        // Calculate gas volume in m³ (vending by unit)
+                        const totalVolume = Math.floor((selectedAmount / gasPrice) * 10) / 10;
+                        // Trigger Gas recharge action using unit-based volume
+                        let apiResult;
+                        const provider = meter.isGprs ? 'zhongyi' : 'stronpower';
+                        if (provider === 'zhongyi') {
+                            const { default: zhongyiMeterService } = yield Promise.resolve().then(() => __importStar(require('../services/zhongyiMeter.service')));
+                            apiResult = yield zhongyiMeterService.rechargeMeter({
                                 meterNumber: meter.meterNumber,
-                                amount: selectedAmount,
-                                customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`
+                                amount: totalVolume,
+                                customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`,
+                                isVendByUnit: true
                             });
                         }
                         else {
-                            yield pipingMeter_service_1.default.rechargePipingMeter({
+                            // Apply Stronpower API (tokenMeterService) for both TOKEN and PIPING meters
+                            apiResult = yield tokenMeter_service_1.default.rechargeTokenMeter({
                                 meterNumber: meter.meterNumber,
-                                amount: selectedAmount,
-                                customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`
+                                amount: totalVolume,
+                                customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`,
+                                isVendByUnit: true
                             });
                         }
-                        return res.send('END Gas recharge complete. Thank you!');
+                        // GPRS remote push integration
+                        let pushResult = { success: true, error: null };
+                        if (apiResult && apiResult.success && meter && meter.imei && apiResult.token) {
+                            try {
+                                const pushRes = yield pipingMeter_service_1.default.pushTokenToImei(meter.imei, apiResult.token);
+                                if (pushRes && !pushRes.success) {
+                                    pushResult.success = false;
+                                    pushResult.error = pushRes.error || 'Remote push rejected';
+                                }
+                            }
+                            catch (pushErr) {
+                                pushResult.success = false;
+                                pushResult.error = pushErr.message || 'Remote push connection error';
+                            }
+                        }
+                        const isFullySuccessful = apiResult && apiResult.success && pushResult.success;
+                        if (isFullySuccessful && createdTxId) {
+                            // Update transaction to SUCCESS and record token
+                            yield prisma_1.default.gasRechargeTransaction.update({
+                                where: { id: createdTxId },
+                                data: {
+                                    status: 'SUCCESS',
+                                    tokenValue: apiResult.token || null,
+                                    apiReference: apiResult.apiReference || null
+                                }
+                            });
+                            // Track Gas Topup and update Gas Meter units
+                            try {
+                                const config = yield prisma_1.default.systemConfig.findFirst();
+                                const gasPrice = (config === null || config === void 0 ? void 0 : config.gasPricePerM3) || 1500;
+                                const unitsPurchased = (apiResult && apiResult.units) ? Number(apiResult.units) : (selectedAmount / gasPrice);
+                                yield prisma_1.default.gasTopup.create({
+                                    data: {
+                                        consumerId: card.consumerId,
+                                        meterId: meter.id,
+                                        amount: selectedAmount,
+                                        units: unitsPurchased,
+                                        status: 'completed',
+                                        orderId: String(createdTxId)
+                                    }
+                                });
+                                yield prisma_1.default.gasMeter.update({
+                                    where: { id: meter.id },
+                                    data: {
+                                        currentUnits: { increment: unitsPurchased }
+                                    }
+                                });
+                            }
+                            catch (topupErr) {
+                                console.error('[USSD Recharge] Failed to create gas topup / update units:', topupErr);
+                            }
+                            // Send SMS notification
+                            try {
+                                const consumer = yield prisma_1.default.consumerProfile.findFirst({
+                                    where: { id: card.consumerId || undefined },
+                                    include: { user: true }
+                                });
+                                if (consumer) {
+                                    const { emailQueue } = yield Promise.resolve().then(() => __importStar(require('../queues/email.queue')));
+                                    const smsDestination = customSmsPhone || consumer.user.phone || consumer.user.email || '';
+                                    if (smsDestination) {
+                                        yield emailQueue.add('gas-recharge-success', {
+                                            to: smsDestination,
+                                            templateType: 'gas-recharge-success',
+                                            data: {
+                                                customer_name: consumer.fullName || consumer.user.name || 'Valued Customer',
+                                                meter_name: 'Gas Meter',
+                                                meter_id: meter.meterNumber,
+                                                amount: selectedAmount.toLocaleString(),
+                                                token: apiResult.token || 'Remote GPRS Topup',
+                                                transaction_id: String(createdTxId),
+                                                volume: totalVolume
+                                            },
+                                            relatedEntity: { type: 'USER', id: consumer.userId.toString() }
+                                        });
+                                    }
+                                }
+                            }
+                            catch (notifyErr) {
+                                console.error('[USSD Wallet Recharge] Failed to trigger notification:', notifyErr);
+                            }
+                            return res.send('END Gas recharge complete. Thank you!');
+                        }
+                        else {
+                            // Rollback/Refund wallet on failure
+                            yield prisma_1.default.wallet.update({
+                                where: { id: wallet.id },
+                                data: { balance: { increment: selectedAmount } }
+                            });
+                            yield prisma_1.default.walletTransaction.create({
+                                data: {
+                                    walletId: wallet.id,
+                                    type: 'refund',
+                                    amount: selectedAmount,
+                                    description: `Refund: Gas Meter Recharge failed - Meter ${meterId} via USSD`,
+                                    status: 'completed'
+                                }
+                            });
+                            if (createdTxId) {
+                                yield prisma_1.default.gasRechargeTransaction.update({
+                                    where: { id: createdTxId },
+                                    data: {
+                                        status: 'FAILED',
+                                        errorMessage: pushResult.error || (apiResult && apiResult.error) || 'Meter recharge failed'
+                                    }
+                                });
+                            }
+                            const failureReason = pushResult.error || (apiResult && apiResult.error) || 'Recharge failed';
+                            return res.send(`END Transaction failed: ${failureReason}`);
+                        }
                     }
                     catch (err) {
                         console.error('Wallet payment USSD transaction error:', err);
@@ -657,6 +823,243 @@ const handleUSSDRequestCore = (req, res) => __awaiter(void 0, void 0, void 0, fu
             const dashboardBalance = ((_b = wallets.find(w => w.type === 'dashboard_wallet')) === null || _b === void 0 ? void 0 : _b.balance) || 0;
             const creditBalance = ((_c = wallets.find(w => w.type === 'credit_wallet')) === null || _c === void 0 ? void 0 : _c.balance) || 0;
             return res.send(`END Your Dashboard Balance is: ${dashboardBalance} RWF. Your Credit Balance is: ${creditBalance} RWF.`);
+        }
+        // ====================================================
+        // OPTION 6: Manage Orders (Pay / Confirm Delivery)
+        // ====================================================
+        if (choice === '6') {
+            const targetPhone = normalizePhoneNumber(phoneNumber); // e.g. 250788881264
+            const shortPhone = targetPhone.startsWith('250') ? targetPhone.substring(3) : targetPhone; // e.g. 788881264
+            // Level 1: Choose Action
+            if (parts.length === 1) {
+                const orderMenu = [
+                    'CON Manage Orders:',
+                    '1. Pay Pending Order',
+                    '2. Confirm Delivery'
+                ].join('\n');
+                return res.send(orderMenu);
+            }
+            const orderAction = parts[1];
+            // ACTION 1: Pay Pending Order
+            if (orderAction === '1') {
+                const sales = yield prisma_1.default.sale.findMany({
+                    where: {
+                        status: 'pending_payment',
+                        OR: [
+                            { notes: { contains: targetPhone } },
+                            { notes: { contains: shortPhone } }
+                        ]
+                    },
+                    orderBy: { createdAt: 'desc' },
+                    take: 5
+                });
+                if (sales.length === 0) {
+                    return res.send('END You have no pending orders awaiting payment.');
+                }
+                // Level 2: List pending orders to choose
+                if (parts.length === 2) {
+                    const listMenu = ['CON Select Order to Pay:'];
+                    sales.forEach((s, idx) => {
+                        listMenu.push(`${idx + 1}. Order #${s.id} (${s.totalAmount} RWF)`);
+                    });
+                    return res.send(listMenu.join('\n'));
+                }
+                const orderIdx = parseInt(parts[2], 10) - 1;
+                const sale = sales[orderIdx];
+                if (!sale) {
+                    return res.send('END Invalid order selection.');
+                }
+                // Level 3: Select Payment Method
+                if (parts.length === 3) {
+                    const paymentMenu = [
+                        `CON Order #${sale.id} total is ${sale.totalAmount} RWF.`,
+                        'Select Payment Method:',
+                        '1. Wallet Balance',
+                        '2. MTN Mobile Money',
+                        '3. Airtel Money'
+                    ].join('\n');
+                    return res.send(paymentMenu);
+                }
+                const payMethodChoice = parts[3];
+                // PAYMENT METHOD 1: Wallet Balance
+                if (payMethodChoice === '1') {
+                    // Step 1: Select Wallet Type
+                    if (parts.length === 4) {
+                        const walletTypeMenu = [
+                            'CON Select Wallet Type:',
+                            '1. Dashboard Balance',
+                            '2. Credit Balance'
+                        ].join('\n');
+                        return res.send(walletTypeMenu);
+                    }
+                    const walletTypeChoice = parts[4];
+                    if (walletTypeChoice !== '1' && walletTypeChoice !== '2') {
+                        return res.send('END Invalid selection.');
+                    }
+                    const walletTypeName = walletTypeChoice === '1' ? 'Dashboard Balance' : 'Credit Balance';
+                    // Step 2: Enter Card Number
+                    if (parts.length === 5) {
+                        return res.send('CON Enter Card Number:');
+                    }
+                    const cardNum = parts[5];
+                    if (!isValidCardFormat(cardNum)) {
+                        return res.send('END Error: Invalid card number format.');
+                    }
+                    // Step 3: Enter Card PIN
+                    if (parts.length === 6) {
+                        return res.send('CON Enter Card PIN:');
+                    }
+                    const cardPin = parts[6];
+                    // Authenticate Card and Wallet Check
+                    const card = yield findNfcCard(cardNum);
+                    if (!card || card.pin !== cardPin) {
+                        return res.send('END Access denied.');
+                    }
+                    if (card.status !== 'active') {
+                        return res.send('END Error: Card is inactive or invalid.');
+                    }
+                    if (!card.consumerId) {
+                        return res.send('END Error: Card is not linked to a customer profile.');
+                    }
+                    const dbWalletType = walletTypeChoice === '1' ? 'dashboard_wallet' : 'credit_wallet';
+                    const wallet = yield prisma_1.default.wallet.findFirst({
+                        where: { consumerId: card.consumerId, type: dbWalletType }
+                    });
+                    if (!wallet || wallet.balance < sale.totalAmount) {
+                        return res.send('END Error: Insufficient wallet balance.');
+                    }
+                    const saleItems = yield prisma_1.default.saleItem.findMany({
+                        where: { saleId: sale.id }
+                    });
+                    // Deduct & update sale status to 'pending' (paid)
+                    yield prisma_1.default.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
+                        // Deduct from Wallet table
+                        yield tx.wallet.update({
+                            where: { id: wallet.id },
+                            data: { balance: { decrement: sale.totalAmount } }
+                        });
+                        // Sync with ConsumerProfile walletBalance
+                        yield tx.consumerProfile.update({
+                            where: { id: card.consumerId },
+                            data: { walletBalance: { decrement: sale.totalAmount } }
+                        });
+                        // Log Wallet Transaction
+                        yield tx.walletTransaction.create({
+                            data: {
+                                walletId: wallet.id,
+                                type: 'order_payment',
+                                amount: -sale.totalAmount,
+                                description: `Order Payment - Order #${sale.id} via USSD (${walletTypeName})`,
+                                status: 'completed'
+                            }
+                        });
+                        // Update Sale Status to 'pending' (paid)
+                        yield tx.sale.update({
+                            where: { id: sale.id },
+                            data: {
+                                status: 'pending',
+                                paymentMethod: 'wallet'
+                            }
+                        });
+                        // Decrement product stock
+                        for (const item of saleItems) {
+                            yield tx.product.update({
+                                where: { id: item.productId },
+                                data: { stock: { decrement: item.quantity } }
+                            });
+                        }
+                    }));
+                    return res.send(`END Payment successful! Your order #${sale.id} is now paid.`);
+                }
+                // PAYMENT METHOD 2: MTN Mobile Money
+                if (payMethodChoice === '2') {
+                    const ordRef = `ORD-${Date.now()}`;
+                    yield prisma_1.default.sale.update({
+                        where: { id: sale.id },
+                        data: { meterId: ordRef }
+                    });
+                    try {
+                        const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
+                        yield palmKash.initiatePayment({
+                            amount: sale.totalAmount,
+                            phoneNumber: targetPhone,
+                            referenceId: ordRef,
+                            description: `USSD Order #${sale.id} Payment`
+                        });
+                    }
+                    catch (e) {
+                        console.error('USSD MoMo pay error:', e.message);
+                    }
+                    return res.send('END Mobile Money transaction initiated. Please complete on your phone.');
+                }
+                // PAYMENT METHOD 3: Airtel Money
+                if (payMethodChoice === '3') {
+                    const ordRef = `ORD-${Date.now()}`;
+                    yield prisma_1.default.sale.update({
+                        where: { id: sale.id },
+                        data: { meterId: ordRef, paymentMethod: 'airtel' }
+                    });
+                    try {
+                        const palmKash = (yield Promise.resolve().then(() => __importStar(require('../services/palmKash.service')))).default;
+                        yield palmKash.initiatePayment({
+                            amount: sale.totalAmount,
+                            phoneNumber: targetPhone,
+                            referenceId: ordRef,
+                            description: `USSD Order #${sale.id} Airtel Payment`
+                        });
+                    }
+                    catch (e) {
+                        console.error('USSD Airtel pay error:', e.message);
+                    }
+                    return res.send('END Airtel Money transaction initiated. Please complete on your phone.');
+                }
+                return res.send('END Invalid selection.');
+            }
+            // ACTION 2: Confirm Delivery
+            if (orderAction === '2') {
+                const sales = yield prisma_1.default.sale.findMany({
+                    where: {
+                        status: { in: ['shipped', 'ready'] },
+                        OR: [
+                            { notes: { contains: targetPhone } },
+                            { notes: { contains: shortPhone } }
+                        ]
+                    },
+                    orderBy: { createdAt: 'desc' }
+                });
+                if (sales.length === 0) {
+                    return res.send('END You have no orders ready for delivery confirmation.');
+                }
+                // Level 2: List orders to choose
+                if (parts.length === 2) {
+                    const listMenu = ['CON Select Order to Confirm:'];
+                    sales.forEach((s, idx) => {
+                        listMenu.push(`${idx + 1}. Order #${s.id} (${s.totalAmount} RWF)`);
+                    });
+                    return res.send(listMenu.join('\n'));
+                }
+                const orderIdx = parseInt(parts[2], 10) - 1;
+                const sale = sales[orderIdx];
+                if (!sale) {
+                    return res.send('END Invalid order selection.');
+                }
+                // Level 3: Confirm action
+                if (parts.length === 3) {
+                    return res.send(`CON Confirm delivery of Order #${sale.id}?\n1. Yes\n2. No`);
+                }
+                const confirmVal = parts[3];
+                if (confirmVal === '1') {
+                    yield prisma_1.default.sale.update({
+                        where: { id: sale.id },
+                        data: { status: 'delivered' }
+                    });
+                    return res.send('END Delivery confirmed! Thank you.');
+                }
+                else {
+                    return res.send('END Confirmation cancelled.');
+                }
+            }
+            return res.send('END Invalid selection.');
         }
         return res.send('END Invalid choice.');
     }

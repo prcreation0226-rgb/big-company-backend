@@ -166,6 +166,21 @@ export const addGasMeter = async (req: AuthRequest, res: Response) => {
 
         if (existingMeter) {
             if (existingMeter.status === 'removed') {
+                // Check if meter is currently active under any other account before reactivating
+                const activeMeterElsewhere = await prisma.gasMeter.findFirst({
+                    where: {
+                        meterNumber: meter_number,
+                        status: 'active'
+                    }
+                });
+
+                if (activeMeterElsewhere) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'This meter number is already registered and active under another account. It must be removed from the other account first.' 
+                    });
+                }
+
                 // Reactivate the existing meter
                 const updatedMeter = await prisma.gasMeter.update({
                     where: { id: existingMeter.id },

@@ -227,25 +227,40 @@ export const handlePalmKashWebhook = async (req: Request, res: Response) => {
                 // Auto-Register meter if it does not exist but exists in GPRS mappings
                 if (!meter) {
                     try {
-                        const { gprsMapping } = await import('../config/gprsMapping');
-                        const matchedMapping = gprsMapping.find(
-                            m => m.meterNo === txRecord.meterNumber || m.meterNo === txRecord.meterNumber.replace(/^MTR-/i, '')
-                        );
+                        const existsGlobally = await prisma.gasMeter.findFirst({
+                            where: {
+                                OR: [
+                                    { meterNumber: txRecord.meterNumber },
+                                    { meterNumber: `MTR-${txRecord.meterNumber}` },
+                                    { meterNumber: txRecord.meterNumber.replace(/^MTR-/i, '') }
+                                ]
+                            }
+                        });
 
-                        if (matchedMapping && txRecord.customerId) {
-                            console.log(`[Webhook GasRecharge] Auto-registering matched GPRS meter ${txRecord.meterNumber} for consumer ${txRecord.customerId}...`);
-                            meter = await prisma.gasMeter.create({
-                                data: {
-                                    consumerId: txRecord.customerId,
-                                    meterNumber: matchedMapping.meterNo,
-                                    imei: matchedMapping.imei,
-                                    serialNo: matchedMapping.serialNo,
-                                    meterKey: matchedMapping.meterKey,
-                                    isGprs: true,
-                                    meterType: 'PIPING',
-                                    status: 'active'
-                                }
-                            });
+                        if (existsGlobally) {
+                            console.log(`[Webhook GasRecharge] Meter ${txRecord.meterNumber} already registered globally (ID: ${existsGlobally.id}). Routing to existing meter.`);
+                            meter = existsGlobally;
+                        } else {
+                            const { gprsMapping } = await import('../config/gprsMapping');
+                            const matchedMapping = gprsMapping.find(
+                                m => m.meterNo === txRecord.meterNumber || m.meterNo === txRecord.meterNumber.replace(/^MTR-/i, '')
+                            );
+
+                            if (matchedMapping && txRecord.customerId) {
+                                console.log(`[Webhook GasRecharge] Auto-registering matched GPRS meter ${txRecord.meterNumber} for consumer ${txRecord.customerId}...`);
+                                meter = await prisma.gasMeter.create({
+                                    data: {
+                                        consumerId: txRecord.customerId,
+                                        meterNumber: matchedMapping.meterNo,
+                                        imei: matchedMapping.imei,
+                                        serialNo: matchedMapping.serialNo,
+                                        meterKey: matchedMapping.meterKey,
+                                        isGprs: true,
+                                        meterType: 'PIPING',
+                                        status: 'active'
+                                    }
+                                });
+                            }
                         }
                     } catch (lookupErr: any) {
                         console.error('[Webhook GasRecharge] Error during meter lookup/registration:', lookupErr.message);

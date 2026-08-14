@@ -305,10 +305,15 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         const walletTypeName = walletTypeChoice === '1' ? 'Dashboard Balance' : 'Credit Balance';
 
         if (parts.length === 8) {
+          return res.send('CON Enter phone number to receive SMS (e.g. 07XXXXXXXX):');
+        }
+        const customSmsPhone = normalizePhoneNumber(parts[8]);
+
+        if (parts.length === 9) {
           return res.send(`CON Confirm payment of ${selectedAmount} RWF for Meter ${meterId} from your ${walletTypeName}?\n1. Yes\n2. No`);
         }
 
-        const confirmVal = parts[8];
+        const confirmVal = parts[9];
         if (confirmVal === '1') {
           // Authenticate Card Number and PIN
           const card = await findNfcCard(cardNum);
@@ -376,6 +381,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
                   meterType: meter.meterType || 'PIPING',
                   amount: selectedAmount,
                   paymentMethod: 'wallet',
+                  paymentPhone: customSmsPhone,
                   status: 'PENDING'
                 }
               });
@@ -399,7 +405,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
                 amount: totalVolume,
                 customerRef: `GASRCH-USSD-${meter.meterNumber}-${Date.now()}`,
                 isVendByUnit: true
-              });
+            });
             } else {
               // Apply Stronpower API (tokenMeterService) for both TOKEN and PIPING meters
               apiResult = await tokenMeterService.rechargeTokenMeter({
@@ -473,7 +479,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
                 });
                 if (consumer) {
                   const { emailQueue } = await import('../queues/email.queue');
-                  const smsDestination = consumer.user.phone || consumer.user.email || '';
+                  const smsDestination = customSmsPhone || consumer.user.phone || consumer.user.email || '';
                   if (smsDestination) {
                     await emailQueue.add('gas-recharge-success', {
                       to: smsDestination,

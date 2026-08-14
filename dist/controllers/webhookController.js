@@ -246,6 +246,7 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     }
                     let meter = yield prisma_1.default.gasMeter.findFirst({
                         where: {
+                            consumerId: txRecord.customerId || undefined,
                             OR: [
                                 { meterNumber: txRecord.meterNumber },
                                 { meterNumber: `MTR-${txRecord.meterNumber}` },
@@ -256,22 +257,37 @@ const handlePalmKashWebhook = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     // Auto-Register meter if it does not exist but exists in GPRS mappings
                     if (!meter) {
                         try {
-                            const { gprsMapping } = yield Promise.resolve().then(() => __importStar(require('../config/gprsMapping')));
-                            const matchedMapping = gprsMapping.find(m => m.meterNo === txRecord.meterNumber || m.meterNo === txRecord.meterNumber.replace(/^MTR-/i, ''));
-                            if (matchedMapping && txRecord.customerId) {
-                                console.log(`[Webhook GasRecharge] Auto-registering matched GPRS meter ${txRecord.meterNumber} for consumer ${txRecord.customerId}...`);
-                                meter = yield prisma_1.default.gasMeter.create({
-                                    data: {
-                                        consumerId: txRecord.customerId,
-                                        meterNumber: matchedMapping.meterNo,
-                                        imei: matchedMapping.imei,
-                                        serialNo: matchedMapping.serialNo,
-                                        meterKey: matchedMapping.meterKey,
-                                        isGprs: true,
-                                        meterType: 'PIPING',
-                                        status: 'active'
-                                    }
-                                });
+                            const existsGlobally = yield prisma_1.default.gasMeter.findFirst({
+                                where: {
+                                    OR: [
+                                        { meterNumber: txRecord.meterNumber },
+                                        { meterNumber: `MTR-${txRecord.meterNumber}` },
+                                        { meterNumber: txRecord.meterNumber.replace(/^MTR-/i, '') }
+                                    ]
+                                }
+                            });
+                            if (existsGlobally) {
+                                console.log(`[Webhook GasRecharge] Meter ${txRecord.meterNumber} already registered globally (ID: ${existsGlobally.id}). Routing to existing meter.`);
+                                meter = existsGlobally;
+                            }
+                            else {
+                                const { gprsMapping } = yield Promise.resolve().then(() => __importStar(require('../config/gprsMapping')));
+                                const matchedMapping = gprsMapping.find(m => m.meterNo === txRecord.meterNumber || m.meterNo === txRecord.meterNumber.replace(/^MTR-/i, ''));
+                                if (matchedMapping && txRecord.customerId) {
+                                    console.log(`[Webhook GasRecharge] Auto-registering matched GPRS meter ${txRecord.meterNumber} for consumer ${txRecord.customerId}...`);
+                                    meter = yield prisma_1.default.gasMeter.create({
+                                        data: {
+                                            consumerId: txRecord.customerId,
+                                            meterNumber: matchedMapping.meterNo,
+                                            imei: matchedMapping.imei,
+                                            serialNo: matchedMapping.serialNo,
+                                            meterKey: matchedMapping.meterKey,
+                                            isGprs: true,
+                                            meterType: 'PIPING',
+                                            status: 'active'
+                                        }
+                                    });
+                                }
                             }
                         }
                         catch (lookupErr) {

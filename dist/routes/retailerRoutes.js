@@ -15,6 +15,7 @@ router.get('/orders/:id', retailerController_1.getOrder);
 router.put('/orders/:id/status', retailerController_1.updateSaleStatus);
 router.post('/orders/:id/cancel', retailerController_1.cancelSale);
 router.post('/orders/:id/fulfill', retailerController_1.fulfillSale);
+router.post('/orders/:id/configure', retailerController_1.configureDraftOrder);
 router.post('/orders', retailerController_1.createOrder);
 router.get('/branches', retailerController_1.getBranches);
 router.post('/branches', retailerController_1.createBranch);
