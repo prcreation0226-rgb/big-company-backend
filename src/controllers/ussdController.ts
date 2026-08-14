@@ -131,10 +131,15 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
 
       // Verification: Check if Meter ID exists
       const targetPhone = normalizePhoneNumber(phoneNumber);
+      const plusTargetPhone = targetPhone.startsWith('+') ? targetPhone : `+${targetPhone}`;
+      const noPlusTargetPhone = targetPhone.startsWith('+') ? targetPhone.substring(1) : targetPhone;
+
       const callerUser = await prisma.user.findFirst({
         where: {
           OR: [
             { phone: targetPhone },
+            { phone: plusTargetPhone },
+            { phone: noPlusTargetPhone },
             { phone: phoneNumber }
           ]
         }
@@ -151,14 +156,15 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
         meter = await prisma.gasMeter.findFirst({
           where: {
             meterNumber: meterId,
-            consumerId: callerConsumer.id
+            consumerId: callerConsumer.id,
+            status: 'active'
           }
         });
       }
 
       if (!meter) {
         meter = await prisma.gasMeter.findFirst({
-          where: { meterNumber: meterId }
+          where: { meterNumber: meterId, status: 'active' }
         });
       }
 
