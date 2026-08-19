@@ -686,40 +686,68 @@ export const getGasUsage = async (req: AuthRequest, res: Response) => {
             }
         });
 
+        // Fetch all Sales for this customer to map payment methods
+        const sales = await prisma.sale.findMany({
+            where: { consumerId: consumerProfile.id }
+        });
+
         // Fetch all gas orders for this customer to map payment methods
         const customerOrders = await prisma.customerOrder.findMany({
             where: { consumerId: consumerProfile.id, orderType: 'gas' }
         });
 
         const mappedData = topups.map(t => {
-            let matchedOrder = customerOrders.find(o => o.id.toString() === t.orderId);
-            
-            if (!matchedOrder) {
-                matchedOrder = customerOrders.find(o => {
-                    let items: any[] = [];
-                    try {
-                        items = JSON.parse(o.items || '[]');
-                    } catch (e) {}
-                    
-                    const meterMatches = items.some((item: any) => item.meterNumber === t.gasMeter?.meterNumber);
-                    const amountMatches = o.amount === t.amount;
-                    const timeDiff = Math.abs(new Date(o.createdAt).getTime() - new Date(t.createdAt).getTime());
-                    return meterMatches && amountMatches && timeDiff < 5 * 60 * 1000;
+            let matchedMethod: string | null = null;
+
+            // 1. Try matching with Sale
+            let matchedSale = sales.find(s => s.id.toString() === t.orderId);
+            if (!matchedSale) {
+                matchedSale = sales.find(s => {
+                    const amountMatches = s.totalAmount === t.amount;
+                    const timeDiff = Math.abs(new Date(s.createdAt).getTime() - new Date(t.createdAt).getTime());
+                    return amountMatches && timeDiff < 5 * 60 * 1000;
                 });
             }
 
+            if (matchedSale) {
+                matchedMethod = matchedSale.paymentMethod;
+            } else {
+                // 2. Try matching with CustomerOrder
+                let matchedOrder = customerOrders.find(o => o.id.toString() === t.orderId);
+                if (!matchedOrder) {
+                    matchedOrder = customerOrders.find(o => {
+                        let items: any[] = [];
+                        try {
+                            items = JSON.parse(o.items || '[]');
+                        } catch (e) {}
+                        const meterMatches = items.some((item: any) => item.meterNumber === t.gasMeter?.meterNumber);
+                        const amountMatches = o.amount === t.amount;
+                        const timeDiff = Math.abs(new Date(o.createdAt).getTime() - new Date(t.createdAt).getTime());
+                        return meterMatches && amountMatches && timeDiff < 5 * 60 * 1000;
+                    });
+                }
+                if (matchedOrder) {
+                    try {
+                        const meta = JSON.parse(matchedOrder.metadata || '{}');
+                        matchedMethod = meta.paymentMethod;
+                    } catch (e) {}
+                }
+            }
+
             let paymentMethod = 'Wallet';
-            if (matchedOrder) {
-                try {
-                    const meta = JSON.parse(matchedOrder.metadata || '{}');
-                    if (meta.paymentMethod === 'mobile_money') {
-                        paymentMethod = 'Mobile Money';
-                    } else if (meta.paymentMethod === 'nfc_card') {
-                        paymentMethod = 'NFC Card';
-                    } else if (meta.paymentMethod === 'credit_wallet') {
-                        paymentMethod = 'Credit Wallet';
-                    }
-                } catch (e) {}
+            if (matchedMethod) {
+                const norm = matchedMethod.toLowerCase();
+                if (norm === 'mobile_money' || norm === 'momo') {
+                    paymentMethod = 'Mobile Money';
+                } else if (norm === 'nfc_card' || norm === 'nfc') {
+                    paymentMethod = 'NFC Card';
+                } else if (norm === 'credit_wallet' || norm === 'credit') {
+                    paymentMethod = 'Credit Wallet';
+                } else if (norm === 'wallet') {
+                    paymentMethod = 'Wallet';
+                } else {
+                    paymentMethod = matchedMethod.charAt(0).toUpperCase() + matchedMethod.slice(1);
+                }
             }
 
             return {
@@ -818,13 +846,11 @@ export const getGasRewardsBalance = async (req: AuthRequest, res: Response) => {
             return res.status(404).json({ success: false, error: 'Customer profile not found' });
         }
 
-        const rewards = await prisma.gasReward.findMany({
-            where: { consumerId: consumerProfile.id }
+        // Get live gas rewards balance from reward_wallet table
+        const rewardsWallet = await prisma.wallet.findFirst({
+            where: { consumerId: consumerProfile.id, type: 'gas_rewards_wallet' }
         });
-
-        console.log(`DEBUG: Found ${rewards.length} rewards for customer ${consumerProfile.id}`);
-
-        const totalUnits = rewards.reduce((sum, r) => sum + r.units, 0);
+        const totalUnits = rewardsWallet ? rewardsWallet.balance : 0;
 
         res.json({
             success: true,

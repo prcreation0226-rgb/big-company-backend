@@ -567,18 +567,13 @@ const getProfileStats = (req, res) => __awaiter(void 0, void 0, void 0, function
         const wallets = yield prisma_1.default.wallet.findMany({
             where: { consumerId: consumerProfile.id }
         });
-        const walletBalance = wallets.reduce((sum, wallet) => sum + wallet.balance, 0);
-        // Fetch global lastGasResetDate
-        const resetAlert = yield prisma_1.default.systemAlert.findFirst({
-            where: { apiName: 'GAS_REPORTING_PERIOD_RESET' },
-            orderBy: { createdAt: 'desc' }
-        });
-        const lastGasResetDate = resetAlert ? new Date(resetAlert.errorMessage) : null;
-        // Get gas rewards total
-        const gasRewards = yield prisma_1.default.gasReward.findMany({
-            where: Object.assign({ consumerId: consumerProfile.id }, (lastGasResetDate ? { createdAt: { gte: lastGasResetDate } } : {}))
-        });
-        const totalGasRewards = gasRewards.reduce((sum, reward) => sum + reward.units, 0);
+        // Get wallet balances (Dashboard + Credit)
+        const walletBalance = wallets
+            .filter(w => w.type === 'dashboard_wallet' || w.type === 'credit_wallet')
+            .reduce((sum, wallet) => sum + wallet.balance, 0);
+        // Get live gas rewards balance from gas_rewards_wallet table
+        const rewardsWallet = wallets.find(w => w.type === 'gas_rewards_wallet');
+        const totalGasRewards = rewardsWallet ? rewardsWallet.balance : 0;
         res.json({
             success: true,
             data: {

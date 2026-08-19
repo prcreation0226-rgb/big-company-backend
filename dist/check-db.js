@@ -15,22 +15,35 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const prisma_1 = __importDefault(require("./utils/prisma"));
 function checkDatabase() {
     return __awaiter(this, void 0, void 0, function* () {
-        console.log('🔍 Database Health Check');
+        console.log('🔍 Database GasTopups & CustomerOrders Check');
         try {
-            const userCount = yield prisma_1.default.user.count();
-            console.log(`- Total Users: ${userCount}`);
-            const wholesalers = yield prisma_1.default.wholesalerProfile.findMany({
-                include: { user: true }
+            const orderCount = yield prisma_1.default.order.count();
+            console.log(`Order Count: ${orderCount}`);
+            const saleCount = yield prisma_1.default.sale.count();
+            console.log(`Sale Count: ${saleCount}`);
+            const customerOrderCount = yield prisma_1.default.customerOrder.count();
+            console.log(`CustomerOrder Count: ${customerOrderCount}`);
+            const topups = yield prisma_1.default.gasTopup.findMany({
+                take: 5,
+                orderBy: { createdAt: 'desc' }
             });
-            console.log(`- Total Wholesalers: ${wholesalers.length}`);
-            wholesalers.forEach(w => console.log(`  - ${w.companyName} (User: ${w.user.phone}, ID: ${w.id})`));
-            const suppliers = yield prisma_1.default.supplier.count();
-            console.log(`- Total Suppliers: ${suppliers}`);
-            const invoices = yield prisma_1.default.profitInvoice.count();
-            console.log(`- Total Profit Invoices: ${invoices}`);
-            const products = yield prisma_1.default.product.count();
-            console.log(`- Total Products: ${products}`);
-            console.log('\n✅ Check completed');
+            console.log('\n--- RECENT TOPUPS ---');
+            for (const t of topups) {
+                console.log(`Topup ID: ${t.id}, Amount: ${t.amount}, orderId: ${t.orderId}`);
+            }
+            if (topups.length > 0) {
+                const firstOrderId = topups[0].orderId;
+                if (firstOrderId) {
+                    // Try searching for this orderId in Order or Sale
+                    const parsedId = parseInt(firstOrderId);
+                    if (!isNaN(parsedId)) {
+                        const matchedSale = yield prisma_1.default.sale.findUnique({ where: { id: parsedId } });
+                        console.log(`\nMatched Sale:`, matchedSale);
+                        const matchedOrder = yield prisma_1.default.order.findUnique({ where: { id: parsedId } });
+                        console.log(`Matched Order:`, matchedOrder);
+                    }
+                }
+            }
         }
         catch (error) {
             console.error('❌ Check failed:', error);
