@@ -812,9 +812,12 @@ export const getMyOrders = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: 'Consumer profile not found' });
     }
 
-    // 1. Fetch Sales (Retail Orders)
+    // 1. Fetch Sales (Retail Orders) - excluding gas rewards
     const sales = await prisma.sale.findMany({
-      where: { consumerId: consumerProfile.id },
+      where: { 
+        consumerId: consumerProfile.id,
+        paymentMethod: { not: 'gas_rewards' }
+      },
       include: {
         saleItems: true
       },
