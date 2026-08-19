@@ -686,9 +686,43 @@ export const getGasUsage = async (req: AuthRequest, res: Response) => {
             }
         });
 
-        res.json({
-            success: true,
-            data: topups.map(t => ({
+        // Fetch all gas orders for this customer to map payment methods
+        const customerOrders = await prisma.customerOrder.findMany({
+            where: { consumerId: consumerProfile.id, orderType: 'gas' }
+        });
+
+        const mappedData = topups.map(t => {
+            let matchedOrder = customerOrders.find(o => o.id.toString() === t.orderId);
+            
+            if (!matchedOrder) {
+                matchedOrder = customerOrders.find(o => {
+                    let items: any[] = [];
+                    try {
+                        items = JSON.parse(o.items || '[]');
+                    } catch (e) {}
+                    
+                    const meterMatches = items.some((item: any) => item.meterNumber === t.gasMeter?.meterNumber);
+                    const amountMatches = o.amount === t.amount;
+                    const timeDiff = Math.abs(new Date(o.createdAt).getTime() - new Date(t.createdAt).getTime());
+                    return meterMatches && amountMatches && timeDiff < 5 * 60 * 1000;
+                });
+            }
+
+            let paymentMethod = 'Wallet';
+            if (matchedOrder) {
+                try {
+                    const meta = JSON.parse(matchedOrder.metadata || '{}');
+                    if (meta.paymentMethod === 'mobile_money') {
+                        paymentMethod = 'Mobile Money';
+                    } else if (meta.paymentMethod === 'nfc_card') {
+                        paymentMethod = 'NFC Card';
+                    } else if (meta.paymentMethod === 'credit_wallet') {
+                        paymentMethod = 'Credit Wallet';
+                    }
+                } catch (e) {}
+            }
+
+            return {
                 id: t.id,
                 meter_number: t.gasMeter?.meterNumber || 'Unknown',
                 meter_alias: t.gasMeter?.aliasName || 'Unknown',
@@ -697,8 +731,14 @@ export const getGasUsage = async (req: AuthRequest, res: Response) => {
                 currency: t.currency,
                 status: t.status,
                 token_value: t.orderId,
+                payment_method: paymentMethod,
                 created_at: t.createdAt
-            }))
+            };
+        });
+
+        res.json({
+            success: true,
+            data: mappedData
         });
     } catch (error: any) {
         console.error('Get gas usage error:', error);

@@ -670,22 +670,58 @@ const getGasUsage = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                 }
             }
         });
+        // Fetch all gas orders for this customer to map payment methods
+        const customerOrders = yield prisma_1.default.customerOrder.findMany({
+            where: { consumerId: consumerProfile.id, orderType: 'gas' }
+        });
+        const mappedData = topups.map(t => {
+            var _a, _b;
+            let matchedOrder = customerOrders.find(o => o.id.toString() === t.orderId);
+            if (!matchedOrder) {
+                matchedOrder = customerOrders.find(o => {
+                    let items = [];
+                    try {
+                        items = JSON.parse(o.items || '[]');
+                    }
+                    catch (e) { }
+                    const meterMatches = items.some((item) => { var _a; return item.meterNumber === ((_a = t.gasMeter) === null || _a === void 0 ? void 0 : _a.meterNumber); });
+                    const amountMatches = o.amount === t.amount;
+                    const timeDiff = Math.abs(new Date(o.createdAt).getTime() - new Date(t.createdAt).getTime());
+                    return meterMatches && amountMatches && timeDiff < 5 * 60 * 1000;
+                });
+            }
+            let paymentMethod = 'Wallet';
+            if (matchedOrder) {
+                try {
+                    const meta = JSON.parse(matchedOrder.metadata || '{}');
+                    if (meta.paymentMethod === 'mobile_money') {
+                        paymentMethod = 'Mobile Money';
+                    }
+                    else if (meta.paymentMethod === 'nfc_card') {
+                        paymentMethod = 'NFC Card';
+                    }
+                    else if (meta.paymentMethod === 'credit_wallet') {
+                        paymentMethod = 'Credit Wallet';
+                    }
+                }
+                catch (e) { }
+            }
+            return {
+                id: t.id,
+                meter_number: ((_a = t.gasMeter) === null || _a === void 0 ? void 0 : _a.meterNumber) || 'Unknown',
+                meter_alias: ((_b = t.gasMeter) === null || _b === void 0 ? void 0 : _b.aliasName) || 'Unknown',
+                amount: t.amount,
+                units: t.units,
+                currency: t.currency,
+                status: t.status,
+                token_value: t.orderId,
+                payment_method: paymentMethod,
+                created_at: t.createdAt
+            };
+        });
         res.json({
             success: true,
-            data: topups.map(t => {
-                var _a, _b;
-                return ({
-                    id: t.id,
-                    meter_number: ((_a = t.gasMeter) === null || _a === void 0 ? void 0 : _a.meterNumber) || 'Unknown',
-                    meter_alias: ((_b = t.gasMeter) === null || _b === void 0 ? void 0 : _b.aliasName) || 'Unknown',
-                    amount: t.amount,
-                    units: t.units,
-                    currency: t.currency,
-                    status: t.status,
-                    token_value: t.orderId,
-                    created_at: t.createdAt
-                });
-            })
+            data: mappedData
         });
     }
     catch (error) {
