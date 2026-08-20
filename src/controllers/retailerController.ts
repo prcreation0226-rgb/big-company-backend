@@ -2572,6 +2572,10 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
       shop_name,
       company_name, // Frontend sends this
       address,
+      province,
+      district,
+      sector,
+      cell,
       tin_number,
       email,
       phone
@@ -2597,7 +2601,11 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
       where: { id: retailerProfile.id },
       data: {
         ...(shopNameUpdate && { shopName: shopNameUpdate }),
-        ...(address && { address })
+        ...(address && { address }),
+        ...(province && { province }),
+        ...(district && { district }),
+        ...(sector && { sector }),
+        ...(cell && { cell })
         // tin_number is ignored as it's not in schema
       },
       include: {

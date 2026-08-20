@@ -43,18 +43,12 @@ export const getDashboard = async (req: AuthRequest, res: Response) => {
     const lastProfitResetDate = profitResetAlert ? new Date(profitResetAlert.errorMessage) : null;
 
     // 2. Orders & Revenue (Combine B2C Sales and B2B Wholesaler Orders)
+    // Fetch ALL sales that are not cancelled (includes gas recharges logged as completed Sales by webhookController)
     const [sales, wholesaleOrders] = await Promise.all([
       prisma.sale.findMany({
         where: {
           ...(lastProfitResetDate ? { createdAt: { gte: lastProfitResetDate } } : {}),
-          saleItems: { some: {} },
-          NOT: {
-            saleItems: {
-              some: {
-                product: { category: { in: ['Gas', 'gas', 'GAS'] } }
-              }
-            }
-          }
+          status: { not: 'cancelled' }
         },
         include: { saleItems: true }
       }),
@@ -76,12 +70,16 @@ export const getDashboard = async (req: AuthRequest, res: Response) => {
     const orderPending = sales.filter(s => s.status === 'pending').length + wholesaleOrders.filter(o => o.status === 'pending').length;
     const orderProcessing = sales.filter(s => s.status === 'processing').length + wholesaleOrders.filter(o => o.status === 'processing').length;
     const orderDelivered = sales.filter(s => s.status === 'completed' || s.status === 'delivered').length + wholesaleOrders.filter(o => o.status === 'delivered').length;
-    const orderCancelled = sales.filter(s => s.status === 'cancelled').length + wholesaleOrders.filter(o => o.status === 'cancelled').length;
+    const orderCancelled = wholesaleOrders.filter(o => o.status === 'cancelled').length;
 
     let salesRevenue = 0;
     for (const sale of sales) {
       if (sale.status === 'completed' || sale.status === 'delivered') {
-        salesRevenue += sale.saleItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+        if (sale.saleItems && sale.saleItems.length > 0) {
+          salesRevenue += sale.saleItems.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+        } else {
+          salesRevenue += sale.totalAmount;
+        }
       }
     }
 
@@ -343,19 +341,21 @@ export const getReports = async (req: AuthRequest, res: Response) => {
       startDate = new Date(now.getFullYear(), 0, 1);
     }
 
-    // 1. Stats based on date range
+    // 1. Stats based on date range — include all sales not cancelled (gas recharges logged as completed Sales)
     const [sales, wholesaleOrders, gasTopups] = await Promise.all([
       prisma.sale.findMany({
         where: {
           createdAt: { gte: startDate },
-          saleItems: { some: {} }
+          status: { not: 'cancelled' }
         }
       }),
       prisma.order.findMany({ where: { createdAt: { gte: startDate } } }),
       prisma.gasTopup.findMany({ where: { createdAt: { gte: startDate }, status: { in: ['completed', 'success'] } } })
     ]);
 
-    const salesRevenue = sales.filter(s => s.status === 'completed' || s.status === 'delivered').reduce((acc, s) => acc + s.totalAmount, 0);
+    const salesRevenue = sales
+      .filter(s => s.status === 'completed' || s.status === 'delivered')
+      .reduce((acc, s) => acc + s.totalAmount, 0);
     const wholesaleRevenue = wholesaleOrders.filter(o => o.status === 'delivered').reduce((acc, o) => acc + o.totalAmount, 0);
     const totalRevenue = Math.round(salesRevenue + wholesaleRevenue);
 
@@ -748,7 +748,7 @@ export const getRetailers = async (req: AuthRequest, res: Response) => {
 // Create retailer
 export const createRetailer = async (req: AuthRequest, res: Response) => {
   try {
-    const { email, password, business_name, phone, address, credit_limit } = req.body;
+    const { email, password, business_name, phone, address, credit_limit, province, district, sector, cell } = req.body;
 
     // Check if user already exists
     const existingUser = await prisma.user.findUnique({ where: { email } });
@@ -781,6 +781,10 @@ export const createRetailer = async (req: AuthRequest, res: Response) => {
         userId: user.id,
         shopName: business_name,
         address,
+        province,
+        district,
+        sector,
+        cell,
         creditLimit: parseFloat(credit_limit || '0'),
         walletBalance: 0
       }
@@ -1245,7 +1249,7 @@ export const deleteCategory = async (req: AuthRequest, res: Response) => {
 export const updateRetailer = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params; // RetailerProfile ID
-    const { business_name, email, phone, address, credit_limit, status } = req.body;
+    const { business_name, email, phone, address, credit_limit, status, province, district, sector, cell } = req.body;
 
     const retailer = await prisma.retailerProfile.findUnique({ where: { id: Number(id) } });
     if (!retailer) return res.status(404).json({ error: 'Retailer not found' });
@@ -1280,6 +1284,10 @@ export const updateRetailer = async (req: AuthRequest, res: Response) => {
       data: {
         shopName: business_name,
         address,
+        province,
+        district,
+        sector,
+        cell,
         creditLimit: credit_limit ? Number(credit_limit) : undefined,
       }
     });
@@ -4368,7 +4376,7 @@ export const saveEmailTemplate = async (req: AuthRequest, res: Response) => {
       'type', 'balance', 'txRef', 'orderNumber', 'quantity', 'totalAmount',
       'temp_password', 'attempt_time', 'date', 'month', 'salesCount', 'revenue',
       'newRetailers', 'newWholesalers', 'lowStockCount', 'offlineMeters', 'period',
-      'action', 'reason', 'reward_amount', 'new_reward_balance'
+      'action', 'reason', 'reward_amount', 'new_reward_balance', 'new_balance'
     ];
 
     // Validate variables in both subject and content
@@ -4505,7 +4513,7 @@ export const getTemplateVariables = async (req: AuthRequest, res: Response) => {
         'type', 'balance', 'txRef', 'orderNumber', 'quantity', 'totalAmount',
         'temp_password', 'attempt_time', 'date', 'month', 'salesCount', 'revenue',
         'newRetailers', 'newWholesalers', 'lowStockCount', 'offlineMeters', 'period',
-        'action', 'reason', 'reward_amount', 'new_reward_balance'
+        'action', 'reason', 'reward_amount', 'new_reward_balance', 'new_balance'
       ]
     });
   } catch (error: any) {

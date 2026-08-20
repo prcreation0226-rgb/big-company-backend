@@ -254,7 +254,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
             data: {
               customerId: meter.consumerId,
               meterNumber: meter.meterNumber,
-              meterType: meter.meterType || 'PIPING',
+              meterType: meter.meterType || (meter.isGprs ? 'PIPING' : 'TOKEN'),
               amount: selectedAmount,
               paymentMethod: 'mobile_money',
               paymentPhone: targetPhone,
@@ -384,7 +384,7 @@ export const handleUSSDRequestCore = async (req: Request, res: Response) => {
                 data: {
                   customerId: card.consumerId,
                   meterNumber: meter.meterNumber,
-                  meterType: meter.meterType || 'PIPING',
+                  meterType: meter.meterType || (meter.isGprs ? 'PIPING' : 'TOKEN'),
                   amount: selectedAmount,
                   paymentMethod: 'wallet',
                   paymentPhone: customSmsPhone,

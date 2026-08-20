@@ -1123,16 +1123,24 @@ export const getWalletBalance = async (req: AuthRequest, res: Response) => {
 export const getRewardsBalance = async (req: AuthRequest, res: Response) => {
   try {
     const consumerProfile = await prisma.consumerProfile.findUnique({
-      where: { userId: req.user!.id }
+      where: { userId: req.user!.id },
+      include: { gasRewards: true }
     });
 
     if (!consumerProfile) {
       return res.status(404).json({ error: 'Consumer profile not found' });
     }
 
+    const totalGasRewards = consumerProfile.gasRewards.reduce((sum, r) => sum + r.units, 0);
+    const rewardsPoints = Math.round(totalGasRewards * 100);
+
     res.json({
-      points: consumerProfile.rewardsPoints,
-      tier: 'Bronze'
+      success: true,
+      data: {
+        total_units: totalGasRewards,
+        points: rewardsPoints,
+        tier: 'Bronze'
+      }
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
