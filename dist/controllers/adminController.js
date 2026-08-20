@@ -535,8 +535,10 @@ const getCustomers = (req, res) => __awaiter(void 0, void 0, void 0, function* (
             .map(p => p.id));
         const formattedCustomers = customers.map(customer => {
             const activeSales = customer.sales.filter(sale => {
-                // Exclude gas top-up purchases (which have no saleItems or have a meterId)
-                if (sale.meterId) {
+                // Exclude gas top-up purchases (which have no saleItems or have a real meterId).
+                // Standard retail orders paid via PalmKash store references starting with 'ORD-' in meterId.
+                const isGasMeter = sale.meterId && !sale.meterId.startsWith('ORD-') && !sale.meterId.startsWith('GAS-');
+                if (isGasMeter) {
                     return false;
                 }
                 if (!sale.saleItems || sale.saleItems.length === 0) {
