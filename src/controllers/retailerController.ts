@@ -149,7 +149,7 @@ export const getDashboardStats = async (req: AuthRequest, res: Response) => {
       let method = sale.paymentMethod || 'cash';
       if (method === 'dashboard_wallet') method = 'wallet';
       if (method === 'credit_wallet') method = 'credit';
-      if (method === 'mobile_money' || method === 'airtel') method = 'momo';
+      if (method === 'mobile_money' || method === 'airtel' || method === 'ussd_callback') method = 'momo';
       acc[method] = (acc[method] || 0) + sale.totalAmount;
       return acc;
     }, {} as Record<string, number>);
@@ -259,7 +259,7 @@ export const getDashboardStats = async (req: AuthRequest, res: Response) => {
         mobileMoneyRevenue: paymentStats['momo'] || 0,
         cashRevenue: paymentStats['cash'] || 0,
         gasRewardsGiven: gasRewardsAggregate._sum.units || 0,
-        gasRewardsValue: Math.round((gasRewardsAggregate._sum.units || 0) * (systemConfig?.gasPricePerM3 || 6500))
+        gasRewardsValue: Number(((gasRewardsAggregate._sum.units || 0) * (systemConfig?.gasPricePerM3 || 6500)).toFixed(4))
       },
 
       // Lists
@@ -3866,7 +3866,7 @@ export const getGasRewardsGiven = async (req: AuthRequest, res: Response) => {
     ]);
 
     const totalM3 = aggregate._sum.units || 0;
-    const totalValue = Math.round(totalM3 * (systemConfig?.gasPricePerM3 || 6500));
+    const totalValue = Number((totalM3 * (systemConfig?.gasPricePerM3 || 6500)).toFixed(4));
 
     const formattedRewards = rewards.map(r => ({
       id: r.id.toString(),

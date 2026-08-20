@@ -164,7 +164,7 @@ const getDashboardStats = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 method = 'wallet';
             if (method === 'credit_wallet')
                 method = 'credit';
-            if (method === 'mobile_money' || method === 'airtel')
+            if (method === 'mobile_money' || method === 'airtel' || method === 'ussd_callback')
                 method = 'momo';
             acc[method] = (acc[method] || 0) + sale.totalAmount;
             return acc;
@@ -264,7 +264,7 @@ const getDashboardStats = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 mobileMoneyRevenue: paymentStats['momo'] || 0,
                 cashRevenue: paymentStats['cash'] || 0,
                 gasRewardsGiven: gasRewardsAggregate._sum.units || 0,
-                gasRewardsValue: Math.round((gasRewardsAggregate._sum.units || 0) * ((systemConfig === null || systemConfig === void 0 ? void 0 : systemConfig.gasPricePerM3) || 6500))
+                gasRewardsValue: Number(((gasRewardsAggregate._sum.units || 0) * ((systemConfig === null || systemConfig === void 0 ? void 0 : systemConfig.gasPricePerM3) || 6500)).toFixed(4))
             },
             // Lists
             salesData: chartData,
@@ -3530,7 +3530,7 @@ const getGasRewardsGiven = (req, res) => __awaiter(void 0, void 0, void 0, funct
             prisma_1.default.systemConfig.findFirst()
         ]);
         const totalM3 = aggregate._sum.units || 0;
-        const totalValue = Math.round(totalM3 * ((systemConfig === null || systemConfig === void 0 ? void 0 : systemConfig.gasPricePerM3) || 6500));
+        const totalValue = Number((totalM3 * ((systemConfig === null || systemConfig === void 0 ? void 0 : systemConfig.gasPricePerM3) || 6500)).toFixed(4));
         const formattedRewards = rewards.map(r => {
             var _a, _b, _c, _d;
             return ({

@@ -3255,7 +3255,7 @@ export const getRetailerAccountDetails = async (req: AuthRequest, res: Response)
 
     const systemConfig = await prisma.systemConfig.findFirst();
     const gasRewardsM3 = gasRewardsAggregate._sum.units || 0;
-    const gasRewardsRwf = Math.round(gasRewardsM3 * (systemConfig?.gasPricePerM3 || 6500));
+    const gasRewardsRwf = Number((gasRewardsM3 * (systemConfig?.gasPricePerM3 || 6500)).toFixed(4));
 
     // Sales statistics (sales TO consumers)
     const salesStats = {
@@ -3266,10 +3266,12 @@ export const getRetailerAccountDetails = async (req: AuthRequest, res: Response)
       completed: filteredCustomerCompleted.length,
       cancelled: filteredCustomerCancelled.length,
       total: retailer.sales.filter(s => s.status === 'pending').length + filteredCustomerCompleted.length + filteredCustomerCancelled.length,
-      totalRevenue: filteredCustomerRevenueSales.reduce((sum, s) => sum + s.totalAmount, 0),
+      totalRevenue: filteredCustomerRevenueSales.filter(s => 
+        ['dashboard_wallet', 'wallet', 'credit_wallet', 'credit', 'mobile_money', 'ussd_callback'].includes(s.paymentMethod)
+      ).reduce((sum, s) => sum + s.totalAmount, 0),
       dashboardWalletRevenue: filteredCustomerRevenueSales.filter(s => s.paymentMethod === 'dashboard_wallet' || s.paymentMethod === 'wallet').reduce((sum, s) => sum + s.totalAmount, 0),
       creditWalletRevenue: filteredCustomerRevenueSales.filter(s => s.paymentMethod === 'credit_wallet' || s.paymentMethod === 'credit').reduce((sum, s) => sum + s.totalAmount, 0),
-      mobileMoneyRevenue: filteredCustomerRevenueSales.filter(s => s.paymentMethod === 'mobile_money').reduce((sum, s) => sum + s.totalAmount, 0),
+      mobileMoneyRevenue: filteredCustomerRevenueSales.filter(s => s.paymentMethod === 'mobile_money' || s.paymentMethod === 'ussd_callback').reduce((sum, s) => sum + s.totalAmount, 0),
       gasRewardsM3,
       gasRewardsRwf,
     };
