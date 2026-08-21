@@ -846,11 +846,12 @@ export const getGasRewardsBalance = async (req: AuthRequest, res: Response) => {
             return res.status(404).json({ success: false, error: 'Customer profile not found' });
         }
 
-        // Get live gas rewards balance from reward_wallet table
-        const rewardsWallet = await prisma.wallet.findFirst({
-            where: { consumerId: consumerProfile.id, type: 'gas_rewards_wallet' }
+        // Calculate actual total gas rewards units from GasReward table
+        const gasRewardsSum = await prisma.gasReward.aggregate({
+            where: { consumerId: consumerProfile.id },
+            _sum: { units: true }
         });
-        const totalUnits = rewardsWallet ? rewardsWallet.balance : 0;
+        const totalUnits = gasRewardsSum._sum.units || 0;
 
         res.json({
             success: true,
