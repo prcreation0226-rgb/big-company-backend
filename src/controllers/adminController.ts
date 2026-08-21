@@ -47,7 +47,6 @@ export const getDashboard = async (req: AuthRequest, res: Response) => {
     const [sales, wholesaleOrders] = await Promise.all([
       prisma.sale.findMany({
         where: {
-          ...(lastProfitResetDate ? { createdAt: { gte: lastProfitResetDate } } : {}),
           status: { not: 'cancelled' }
         },
         include: { saleItems: true }
@@ -86,10 +85,7 @@ export const getDashboard = async (req: AuthRequest, res: Response) => {
     let wholesaleRevenue = 0;
     for (const order of wholesaleOrders) {
       if (order.status === 'delivered') {
-        const settlementDate = (order.wholesalerProfile as any)?.lastSettlementDate;
-        if (!settlementDate || order.createdAt >= settlementDate) {
-          wholesaleRevenue += order.totalAmount;
-        }
+        wholesaleRevenue += order.totalAmount;
       }
     }
     const totalRevenue = Math.round(salesRevenue + wholesaleRevenue);
